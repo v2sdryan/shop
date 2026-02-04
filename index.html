@@ -785,6 +785,30 @@
                 <li>資料會自動喺 3 日後清除</li>
             </ol>
         </div>
+
+        <div class="form-section">
+            <div class="form-title">🔧 Firebase 規則設定</div>
+            <div style="font-size: 0.85rem; color: var(--text-light); line-height: 1.6;">
+                <p style="margin-bottom: 8px;"><strong>Firestore Database 規則：</strong></p>
+                <code style="display: block; background: var(--bg); padding: 10px; border-radius: 6px; font-size: 0.75rem; margin-bottom: 12px; white-space: pre-wrap;">rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if true;
+    }
+  }
+}</code>
+                <p style="margin-bottom: 8px;"><strong>Storage 規則：</strong></p>
+                <code style="display: block; background: var(--bg); padding: 10px; border-radius: 6px; font-size: 0.75rem; white-space: pre-wrap;">rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /{allPaths=**} {
+      allow read, write: if true;
+    }
+  }
+}</code>
+            </div>
+        </div>
     </div>
 
     <!-- Bottom Navigation -->
@@ -812,10 +836,10 @@
         <img id="modalImage" src="" alt="">
     </div>
 
-    <!-- Firebase SDK -->
-    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-storage-compat.js"></script>
+    <!-- Firebase SDK - Using CDN with defer -->
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-storage-compat.js"></script>
 
     <script>
         // ============ State Management ============
@@ -883,6 +907,13 @@
 
         // ============ Firebase Setup ============
         function initFirebase() {
+            // Check if Firebase SDK is loaded
+            if (typeof firebase === 'undefined') {
+                console.error('Firebase SDK not loaded');
+                showToast('Firebase 載入失敗，使用本機儲存', 'error');
+                return false;
+            }
+
             try {
                 const firebaseConfig = {
                     apiKey: "AIzaSyCMW7BI7C5oXn_jRjMq0hpeVls04ueLYkc",
@@ -904,41 +935,56 @@
                 return true;
             } catch (error) {
                 console.error('Firebase init error:', error);
+                showToast('Firebase 連接失敗，使用本機儲存', 'error');
                 return false;
             }
         }
 
         // ============ Data Operations ============
         async function saveCustomer(customerData) {
-            if (firebaseInitialized && db) {
+            if (firebaseInitialized && db && storage) {
                 try {
                     // Upload photos to Firebase Storage
                     const photoUrls = {};
                     for (const [type, data] of Object.entries(customerData.photos)) {
                         if (data) {
-                            const ref = storage.ref().child(`photos/${Date.now()}_${type}.jpg`);
-                            await ref.putString(data, 'data_url');
-                            photoUrls[type] = await ref.getDownloadURL();
+                            try {
+                                const fileName = `photos/${Date.now()}_${type}.jpg`;
+                                const ref = storage.ref().child(fileName);
+                                console.log('Uploading:', fileName);
+                                await ref.putString(data, 'data_url');
+                                photoUrls[type] = await ref.getDownloadURL();
+                                console.log('Uploaded:', photoUrls[type]);
+                            } catch (uploadError) {
+                                console.error('Photo upload error:', uploadError);
+                                // Continue with local storage for this photo
+                                photoUrls[type] = data;
+                            }
                         }
                     }
 
                     // Save to Firestore
-                    const docRef = await db.collection('customers').add({
+                    const docData = {
                         number: customerData.number,
                         oldNumber: customerData.oldNumber,
-                        lensTypes: customerData.lensTypes, // Array
+                        lensTypes: customerData.lensTypes,
                         photos: photoUrls,
                         createdAt: firebase.firestore.FieldValue.serverTimestamp(),
                         expiresAt: new Date(Date.now() + EXPIRY_DAYS * 24 * 60 * 60 * 1000)
-                    });
+                    };
+                    
+                    console.log('Saving to Firestore:', docData);
+                    const docRef = await db.collection('customers').add(docData);
+                    console.log('Saved with ID:', docRef.id);
 
                     return { id: docRef.id, ...customerData, photos: photoUrls };
                 } catch (error) {
                     console.error('Firebase save error:', error);
-                    showToast('Firebase 儲存失敗，已儲存到本機', 'error');
+                    showToast('Firebase 儲存失敗: ' + error.message, 'error');
                     return addLocalRecord(customerData);
                 }
             } else {
+                console.log('Firebase not available, saving locally');
                 return addLocalRecord(customerData);
             }
         }
@@ -1263,7 +1309,16 @@
             
             // Update Firebase status
             const statusEl = document.getElementById('firebaseStatus');
-            if (firebaseInitialized) {
+            const cloudCountEl = document.getElementById('cloudDataCount');
+            
+            if (typeof firebase === 'undefined') {
+                statusEl.textContent = 'SDK 未載入 ✗';
+                statusEl.style.color = 'var(--danger)';
+                cloudCountEl.textContent = '未連接';
+                return;
+            }
+            
+            if (firebaseInitialized && db) {
                 statusEl.textContent = '已連接 ✓';
                 statusEl.style.color = 'var(--success)';
                 
@@ -1272,14 +1327,17 @@
                     const snapshot = await db.collection('customers')
                         .where('expiresAt', '>', new Date())
                         .get();
-                    document.getElementById('cloudDataCount').textContent = snapshot.size + ' 筆';
+                    cloudCountEl.textContent = snapshot.size + ' 筆';
                 } catch (error) {
-                    document.getElementById('cloudDataCount').textContent = '無法讀取';
+                    console.error('Firestore read error:', error);
+                    cloudCountEl.textContent = '讀取失敗 - 請檢查 Firestore 規則';
+                    statusEl.textContent = '連接但無法讀取 ⚠️';
+                    statusEl.style.color = '#f39c12';
                 }
             } else {
                 statusEl.textContent = '未連接 ✗';
                 statusEl.style.color = 'var(--danger)';
-                document.getElementById('cloudDataCount').textContent = '未連接';
+                cloudCountEl.textContent = '未連接';
             }
         }
 
@@ -1375,7 +1433,7 @@
         }
 
         // ============ Initialize ============
-        document.addEventListener('DOMContentLoaded', () => {
+        function initApp() {
             initFirebase();
             setupPhotoUploads();
             setupSearch();
@@ -1406,6 +1464,19 @@
             document.getElementById('customerNumber').value = generateCustomerNumber();
             
             refreshCustomerList();
+        }
+
+        // Wait for DOM and Firebase SDK to load
+        document.addEventListener('DOMContentLoaded', () => {
+            // Give Firebase SDK time to load
+            if (typeof firebase !== 'undefined') {
+                initApp();
+            } else {
+                // Retry after a short delay
+                setTimeout(() => {
+                    initApp();
+                }, 500);
+            }
         });
     </script>
 </body>
