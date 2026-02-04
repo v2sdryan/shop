@@ -136,14 +136,37 @@
             border-radius: 12px;
             padding: 16px;
             box-shadow: 0 2px 8px var(--shadow);
-            cursor: pointer;
             transition: all 0.2s;
             border: 1px solid var(--border);
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
         }
 
-        .customer-card:active {
-            transform: scale(0.98);
-            box-shadow: 0 1px 4px var(--shadow);
+        .customer-card.selected {
+            background: linear-gradient(135deg, rgba(26, 95, 122, 0.08) 0%, rgba(87, 197, 182, 0.08) 100%);
+            border-color: var(--primary);
+        }
+
+        .customer-card-checkbox {
+            flex-shrink: 0;
+            margin-top: 4px;
+        }
+
+        .customer-card-checkbox input[type="checkbox"] {
+            width: 20px;
+            height: 20px;
+            cursor: pointer;
+            accent-color: var(--primary);
+        }
+
+        .customer-card-content {
+            flex: 1;
+            cursor: pointer;
+        }
+
+        .customer-card-content:active {
+            opacity: 0.8;
         }
 
         .customer-name {
@@ -184,6 +207,59 @@
         .badge-count {
             background: var(--accent-light);
             color: var(--primary-dark);
+        }
+
+        /* Selection Controls */
+        .selection-controls {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+            padding: 12px 16px;
+            background: var(--bg-card);
+            border-radius: 12px;
+            box-shadow: 0 2px 8px var(--shadow);
+            border: 1px solid var(--border);
+        }
+
+        .select-all-container {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            font-weight: 500;
+            color: var(--text);
+            user-select: none;
+        }
+
+        .select-all-container input[type="checkbox"] {
+            width: 20px;
+            height: 20px;
+            cursor: pointer;
+            accent-color: var(--primary);
+        }
+
+        .btn-delete-selected {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 8px;
+            font-size: 0.9rem;
+            font-weight: 500;
+            font-family: inherit;
+            cursor: pointer;
+            transition: all 0.2s;
+            background: var(--danger);
+            color: white;
+        }
+
+        .btn-delete-selected:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .btn-delete-selected:not(:disabled):active {
+            transform: scale(0.95);
         }
 
         /* Upload Form */
@@ -662,6 +738,16 @@
             ⚠️ 資料會喺 3 日後自動清除，請及時處理
         </div>
 
+        <div class="selection-controls">
+            <label class="select-all-container">
+                <input type="checkbox" id="selectAllCheckbox" onchange="toggleSelectAll()">
+                <span>全選</span>
+            </label>
+            <button id="deleteSelectedBtn" class="btn-delete-selected" onclick="deleteSelected()" disabled>
+                🗑️ 刪除選取項目 (<span id="selectedCount">0</span>)
+            </button>
+        </div>
+
         <div id="customerList" class="customer-list">
             <!-- Customer cards will be loaded here -->
         </div>
@@ -855,6 +941,9 @@ service firebase.storage {
             'machine-data': null
         };
 
+        // Selection state
+        let selectedCustomers = new Set();
+
         // ============ Customer Number Generator ============
         function generateCustomerNumber() {
             const now = new Date();
@@ -1039,6 +1128,99 @@ service firebase.storage {
             }
         }
 
+        // ============ Selection Functions ============
+        function toggleCustomerSelection(id, event) {
+            event.stopPropagation(); // Prevent card click
+            
+            if (selectedCustomers.has(id)) {
+                selectedCustomers.delete(id);
+            } else {
+                selectedCustomers.add(id);
+            }
+            
+            updateSelectionUI();
+        }
+
+        function toggleSelectAll() {
+            const checkbox = document.getElementById('selectAllCheckbox');
+            const customerCards = document.querySelectorAll('.customer-card-checkbox input[type="checkbox"]');
+            
+            selectedCustomers.clear();
+            
+            if (checkbox.checked) {
+                customerCards.forEach(cb => {
+                    selectedCustomers.add(cb.value);
+                    cb.checked = true;
+                });
+            } else {
+                customerCards.forEach(cb => {
+                    cb.checked = false;
+                });
+            }
+            
+            updateSelectionUI();
+        }
+
+        function updateSelectionUI() {
+            const selectedCount = selectedCustomers.size;
+            const deleteBtn = document.getElementById('deleteSelectedBtn');
+            const selectAllCheckbox = document.getElementById('selectAllCheckbox');
+            const customerCheckboxes = document.querySelectorAll('.customer-card-checkbox input[type="checkbox"]');
+            
+            // Update selected count
+            document.getElementById('selectedCount').textContent = selectedCount;
+            
+            // Enable/disable delete button
+            deleteBtn.disabled = selectedCount === 0;
+            
+            // Update select all checkbox state
+            const totalCheckboxes = customerCheckboxes.length;
+            if (selectedCount === 0) {
+                selectAllCheckbox.checked = false;
+                selectAllCheckbox.indeterminate = false;
+            } else if (selectedCount === totalCheckboxes) {
+                selectAllCheckbox.checked = true;
+                selectAllCheckbox.indeterminate = false;
+            } else {
+                selectAllCheckbox.checked = false;
+                selectAllCheckbox.indeterminate = true;
+            }
+            
+            // Update card styling and checkbox states
+            customerCheckboxes.forEach(cb => {
+                const card = cb.closest('.customer-card');
+                const isSelected = selectedCustomers.has(cb.value);
+                cb.checked = isSelected;
+                
+                if (isSelected) {
+                    card.classList.add('selected');
+                } else {
+                    card.classList.remove('selected');
+                }
+            });
+        }
+
+        async function deleteSelected() {
+            if (selectedCustomers.size === 0) return;
+            
+            const count = selectedCustomers.size;
+            if (!confirm(`確定要刪除 ${count} 個客人紀錄？`)) {
+                return;
+            }
+            
+            // Delete all selected customers
+            const deletePromises = Array.from(selectedCustomers).map(id => deleteCustomer(id));
+            await Promise.all(deletePromises);
+            
+            // Clear selection
+            selectedCustomers.clear();
+            
+            // Refresh the list
+            await refreshCustomerList();
+            
+            showToast(`已刪除 ${count} 個紀錄`, 'success');
+        }
+
         // ============ UI Functions ============
         function showPage(pageName) {
             document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
@@ -1050,6 +1232,8 @@ service firebase.storage {
             ].classList.add('active');
 
             if (pageName === 'home') {
+                // Clear selections when returning to home page
+                selectedCustomers.clear();
                 refreshCustomerList();
             } else if (pageName === 'upload') {
                 // Generate new customer number if form is empty
@@ -1102,18 +1286,28 @@ service firebase.storage {
                 const lensDisplay = types.map(t => `${lensTypeIcons[t] || '📋'} ${t}`).join(' · ') || '未選擇';
                 
                 return `
-                    <div class="customer-card" onclick="showCustomerDetail('${c.id}')">
-                        <div class="customer-name">${escapeHtml(c.number || '未有編號')}</div>
-                        <div class="customer-meta">
-                            <span>${lensDisplay}</span>
-                            ${c.oldNumber ? `<span>📁 舊號: ${escapeHtml(c.oldNumber)}</span>` : ''}
-                            <span><span class="badge badge-count">${photoCount} 張相片</span></span>
+                    <div class="customer-card ${selectedCustomers.has(c.id) ? 'selected' : ''}">
+                        <div class="customer-card-checkbox">
+                            <input type="checkbox" value="${c.id}" 
+                                ${selectedCustomers.has(c.id) ? 'checked' : ''}
+                                onchange="toggleCustomerSelection('${c.id}', event)">
                         </div>
-                        <div class="date-badge">🕐 ${dateStr}</div>
+                        <div class="customer-card-content" onclick="showCustomerDetail('${c.id}')">
+                            <div class="customer-name">${escapeHtml(c.number || '未有編號')}</div>
+                            <div class="customer-meta">
+                                <span>${lensDisplay}</span>
+                                ${c.oldNumber ? `<span>📁 舊號: ${escapeHtml(c.oldNumber)}</span>` : ''}
+                                <span><span class="badge badge-count">${photoCount} 張相片</span></span>
+                            </div>
+                            <div class="date-badge">🕐 ${dateStr}</div>
+                        </div>
                     </div>
 
                 `;
             }).join('');
+            
+            // Update selection UI after rendering
+            updateSelectionUI();
         }
 
         async function showCustomerDetail(id) {
