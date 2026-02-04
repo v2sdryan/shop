@@ -836,10 +836,10 @@ service firebase.storage {
         <img id="modalImage" src="" alt="">
     </div>
 
-    <!-- Firebase SDK - Using CDN with defer -->
-    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-storage-compat.js"></script>
+    <!-- Firebase SDK - Alternative CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/firebase@9.22.0/firebase-app-compat.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/firebase@9.22.0/firebase-firestore-compat.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/firebase@9.22.0/firebase-storage-compat.min.js"></script>
 
     <script>
         // ============ State Management ============
@@ -942,49 +942,54 @@ service firebase.storage {
 
         // ============ Data Operations ============
         async function saveCustomer(customerData) {
-            if (firebaseInitialized && db && storage) {
-                try {
-                    // Upload photos to Firebase Storage
-                    const photoUrls = {};
-                    for (const [type, data] of Object.entries(customerData.photos)) {
-                        if (data) {
-                            try {
-                                const fileName = `photos/${Date.now()}_${type}.jpg`;
-                                const ref = storage.ref().child(fileName);
-                                console.log('Uploading:', fileName);
-                                await ref.putString(data, 'data_url');
-                                photoUrls[type] = await ref.getDownloadURL();
-                                console.log('Uploaded:', photoUrls[type]);
-                            } catch (uploadError) {
-                                console.error('Photo upload error:', uploadError);
-                                // Continue with local storage for this photo
-                                photoUrls[type] = data;
-                            }
+            // Check if Firebase is available
+            if (!firebaseInitialized || !db || !storage) {
+                console.log('Firebase not available, saving locally');
+                showToast('使用本機儲存', '');
+                return addLocalRecord(customerData);
+            }
+
+            try {
+                // Upload photos to Firebase Storage with timeout
+                const photoUrls = {};
+                for (const [type, data] of Object.entries(customerData.photos)) {
+                    if (data) {
+                        try {
+                            const fileName = `photos/${Date.now()}_${Math.random().toString(36).substr(2, 9)}_${type}.jpg`;
+                            const ref = storage.ref().child(fileName);
+                            console.log('Uploading:', fileName);
+                            
+                            // Upload with metadata
+                            const metadata = { contentType: 'image/jpeg' };
+                            await ref.putString(data, 'data_url', metadata);
+                            photoUrls[type] = await ref.getDownloadURL();
+                            console.log('Upload success:', type);
+                        } catch (uploadError) {
+                            console.error('Photo upload error:', type, uploadError);
+                            // Store base64 directly if upload fails
+                            photoUrls[type] = data;
                         }
                     }
-
-                    // Save to Firestore
-                    const docData = {
-                        number: customerData.number,
-                        oldNumber: customerData.oldNumber,
-                        lensTypes: customerData.lensTypes,
-                        photos: photoUrls,
-                        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-                        expiresAt: new Date(Date.now() + EXPIRY_DAYS * 24 * 60 * 60 * 1000)
-                    };
-                    
-                    console.log('Saving to Firestore:', docData);
-                    const docRef = await db.collection('customers').add(docData);
-                    console.log('Saved with ID:', docRef.id);
-
-                    return { id: docRef.id, ...customerData, photos: photoUrls };
-                } catch (error) {
-                    console.error('Firebase save error:', error);
-                    showToast('Firebase 儲存失敗: ' + error.message, 'error');
-                    return addLocalRecord(customerData);
                 }
-            } else {
-                console.log('Firebase not available, saving locally');
+
+                // Save to Firestore
+                const docData = {
+                    number: customerData.number,
+                    oldNumber: customerData.oldNumber || '',
+                    lensTypes: customerData.lensTypes || [],
+                    photos: photoUrls,
+                    createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+                    expiresAt: new Date(Date.now() + EXPIRY_DAYS * 24 * 60 * 60 * 1000)
+                };
+                
+                console.log('Saving to Firestore...');
+                const docRef = await db.collection('customers').add(docData);
+                console.log('Saved with ID:', docRef.id);
+
+                return { id: docRef.id, ...customerData, photos: photoUrls };
+            } catch (error) {
+                console.error('Firebase save error:', error);
+                showToast('雲端儲存失敗，已存到本機', 'error');
                 return addLocalRecord(customerData);
             }
         }
@@ -1415,17 +1420,24 @@ service firebase.storage {
                 const customerData = {
                     number: document.getElementById('customerNumber').value,
                     oldNumber: document.getElementById('customerOldNumber').value.trim(),
-                    lensTypes: [...selectedLensTypes], // Array of selected types
+                    lensTypes: [...selectedLensTypes],
                     photos: { ...uploadedPhotos }
                 };
 
-                await saveCustomer(customerData);
+                // Add timeout to prevent infinite loading
+                const timeoutPromise = new Promise((_, reject) => 
+                    setTimeout(() => reject(new Error('儲存超時')), 30000)
+                );
+                
+                const savePromise = saveCustomer(customerData);
+                await Promise.race([savePromise, timeoutPromise]);
+                
                 showToast('✓ 資料已儲存', 'success');
                 resetUploadForm();
                 showPage('home');
             } catch (error) {
                 console.error('Submit error:', error);
-                showToast('儲存失敗，請重試', 'error');
+                showToast('儲存失敗: ' + error.message, 'error');
             } finally {
                 submitBtn.disabled = false;
                 submitBtn.textContent = '儲存資料';
@@ -1434,7 +1446,7 @@ service firebase.storage {
 
         // ============ Initialize ============
         function initApp() {
-            initFirebase();
+            const firebaseOk = initFirebase();
             setupPhotoUploads();
             setupSearch();
             
@@ -1445,11 +1457,9 @@ service firebase.storage {
                     const index = selectedLensTypes.indexOf(type);
                     
                     if (index > -1) {
-                        // Already selected, remove it
                         selectedLensTypes.splice(index, 1);
                         btn.classList.remove('selected');
                     } else {
-                        // Not selected, add it
                         selectedLensTypes.push(type);
                         btn.classList.add('selected');
                     }
@@ -1459,23 +1469,39 @@ service firebase.storage {
             });
             
             document.getElementById('submitBtn').addEventListener('click', handleSubmit);
-            
-            // Generate initial customer number
             document.getElementById('customerNumber').value = generateCustomerNumber();
             
             refreshCustomerList();
+            
+            // Show status
+            if (firebaseOk) {
+                console.log('App initialized with Firebase');
+            } else {
+                console.log('App initialized with Local Storage only');
+            }
         }
 
-        // Wait for DOM and Firebase SDK to load
+        // Wait for DOM and try to init
         document.addEventListener('DOMContentLoaded', () => {
-            // Give Firebase SDK time to load
+            // Try immediately
             if (typeof firebase !== 'undefined') {
                 initApp();
             } else {
-                // Retry after a short delay
-                setTimeout(() => {
-                    initApp();
-                }, 500);
+                // Retry up to 3 times
+                let retries = 0;
+                const maxRetries = 3;
+                const retryInterval = setInterval(() => {
+                    retries++;
+                    console.log('Checking Firebase SDK... attempt', retries);
+                    if (typeof firebase !== 'undefined') {
+                        clearInterval(retryInterval);
+                        initApp();
+                    } else if (retries >= maxRetries) {
+                        clearInterval(retryInterval);
+                        console.log('Firebase SDK not available, using local storage');
+                        initApp();
+                    }
+                }, 1000);
             }
         });
     </script>
