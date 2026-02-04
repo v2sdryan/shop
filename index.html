@@ -1004,8 +1004,6 @@ service firebase.storage {
             if (firebaseInitialized && db) {
                 try {
                     const snapshot = await db.collection('customers')
-                        .where('expiresAt', '>', new Date())
-                        .orderBy('expiresAt')
                         .orderBy('createdAt', 'desc')
                         .get();
 
