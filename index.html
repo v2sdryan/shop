@@ -696,6 +696,115 @@
             display: inline-block;
         }
 
+        /* Prescription Section */
+        .rx-section {
+            margin-bottom: 16px;
+        }
+
+        .rx-eye-label {
+            font-size: 0.95rem;
+            font-weight: 600;
+            color: var(--primary);
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 12px;
+            background: linear-gradient(135deg, rgba(26, 95, 122, 0.08) 0%, rgba(87, 197, 182, 0.08) 100%);
+            border-radius: 8px;
+        }
+
+        .rx-row {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 8px;
+            margin-bottom: 14px;
+        }
+
+        .rx-field {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .rx-field label {
+            font-size: 0.7rem;
+            font-weight: 500;
+            color: var(--text-light);
+            text-align: center;
+        }
+
+        .rx-field select {
+            width: 100%;
+            padding: 10px 2px;
+            border: 1.5px solid var(--border);
+            border-radius: 8px;
+            font-size: 0.85rem;
+            font-family: inherit;
+            background: var(--bg);
+            color: var(--text);
+            text-align: center;
+            appearance: none;
+            -webkit-appearance: none;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23666' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 6px center;
+            padding-right: 20px;
+            cursor: pointer;
+            transition: border-color 0.2s;
+        }
+
+        .rx-field select:focus {
+            outline: none;
+            border-color: var(--primary-light);
+            background-color: white;
+        }
+
+        .rx-field select.has-value {
+            border-color: var(--accent);
+            font-weight: 500;
+        }
+
+        .rx-divider {
+            height: 1px;
+            background: var(--border);
+            margin: 4px 0 14px 0;
+        }
+
+        /* Detail page prescription display */
+        .rx-display {
+            margin-top: 12px;
+        }
+
+        .rx-display-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.85rem;
+            margin-top: 8px;
+        }
+
+        .rx-display-table th {
+            background: var(--bg);
+            padding: 8px 6px;
+            font-weight: 500;
+            color: var(--text-light);
+            font-size: 0.75rem;
+            text-align: center;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .rx-display-table td {
+            padding: 8px 6px;
+            text-align: center;
+            border-bottom: 1px solid var(--border);
+            font-weight: 500;
+        }
+
+        .rx-display-table tr td:first-child {
+            font-weight: 600;
+            color: var(--primary);
+        }
+
         /* Expiry warning */
         .expiry-warning {
             background: #fff3cd;
@@ -772,6 +881,58 @@
                     <button type="button" class="lens-type-btn" data-type="近視">📖 睇近</button>
                     <button type="button" class="lens-type-btn" data-type="漸進">🔄 漸進</button>
                     <button type="button" class="lens-type-btn" data-type="其他">📋 其他</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="form-section">
+            <div class="form-title">🔬 度數資料</div>
+            
+            <!-- Right Eye -->
+            <div class="rx-section">
+                <div class="rx-eye-label">👁️ R 右眼</div>
+                <div class="rx-row">
+                    <div class="rx-field">
+                        <label>度數 SPH</label>
+                        <select id="rx-r-sph" onchange="rxChanged(this)"></select>
+                    </div>
+                    <div class="rx-field">
+                        <label>散光 CYL</label>
+                        <select id="rx-r-cyl" onchange="rxChanged(this)"></select>
+                    </div>
+                    <div class="rx-field">
+                        <label>線位 AXIS</label>
+                        <select id="rx-r-axis" onchange="rxChanged(this)"></select>
+                    </div>
+                    <div class="rx-field">
+                        <label>老花 ADD</label>
+                        <select id="rx-r-add" onchange="rxChanged(this)"></select>
+                    </div>
+                </div>
+            </div>
+
+            <div class="rx-divider"></div>
+
+            <!-- Left Eye -->
+            <div class="rx-section">
+                <div class="rx-eye-label">👁️ L 左眼</div>
+                <div class="rx-row">
+                    <div class="rx-field">
+                        <label>度數 SPH</label>
+                        <select id="rx-l-sph" onchange="rxChanged(this)"></select>
+                    </div>
+                    <div class="rx-field">
+                        <label>散光 CYL</label>
+                        <select id="rx-l-cyl" onchange="rxChanged(this)"></select>
+                    </div>
+                    <div class="rx-field">
+                        <label>線位 AXIS</label>
+                        <select id="rx-l-axis" onchange="rxChanged(this)"></select>
+                    </div>
+                    <div class="rx-field">
+                        <label>老花 ADD</label>
+                        <select id="rx-l-add" onchange="rxChanged(this)"></select>
+                    </div>
                 </div>
             </div>
         </div>
@@ -928,6 +1089,133 @@ service firebase.storage {
     <script src="https://cdn.jsdelivr.net/npm/firebase@9.22.0/firebase-storage-compat.min.js"></script>
 
     <script>
+        // ============ Prescription (Rx) Functions ============
+        function initRxSelects() {
+            // SPH: -20.00 to +20.00, step 0.25
+            const sphOptions = [''];
+            for (let v = 20.00; v >= -20.00; v -= 0.25) {
+                const val = v.toFixed(2);
+                const display = v > 0 ? `+${val}` : val;
+                sphOptions.push(display);
+            }
+
+            // CYL: 0.00 to -6.00, step 0.25
+            const cylOptions = [''];
+            for (let v = 0; v >= -6.00; v -= 0.25) {
+                cylOptions.push(v.toFixed(2));
+            }
+
+            // AXIS: 1 to 180, step 1
+            const axisOptions = [''];
+            for (let v = 1; v <= 180; v++) {
+                axisOptions.push(String(v));
+            }
+
+            // ADD: 0.25 to 6.00, step 0.25
+            const addOptions = [''];
+            for (let v = 0.25; v <= 6.00; v += 0.25) {
+                addOptions.push(`+${v.toFixed(2)}`);
+            }
+
+            ['r', 'l'].forEach(eye => {
+                populateSelect(`rx-${eye}-sph`, sphOptions);
+                populateSelect(`rx-${eye}-cyl`, cylOptions);
+                populateSelect(`rx-${eye}-axis`, axisOptions);
+                populateSelect(`rx-${eye}-add`, addOptions);
+            });
+        }
+
+        function populateSelect(id, options) {
+            const sel = document.getElementById(id);
+            sel.innerHTML = options.map(o => 
+                `<option value="${o}">${o || '---'}</option>`
+            ).join('');
+        }
+
+        function rxChanged(selectEl) {
+            if (selectEl.value) {
+                selectEl.classList.add('has-value');
+            } else {
+                selectEl.classList.remove('has-value');
+            }
+        }
+
+        function getRxData() {
+            const data = {};
+            ['r', 'l'].forEach(eye => {
+                data[eye] = {
+                    sph: document.getElementById(`rx-${eye}-sph`).value,
+                    cyl: document.getElementById(`rx-${eye}-cyl`).value,
+                    axis: document.getElementById(`rx-${eye}-axis`).value,
+                    add: document.getElementById(`rx-${eye}-add`).value
+                };
+            });
+            return data;
+        }
+
+        function setRxData(rxData) {
+            if (!rxData) return;
+            ['r', 'l'].forEach(eye => {
+                if (rxData[eye]) {
+                    ['sph', 'cyl', 'axis', 'add'].forEach(field => {
+                        const sel = document.getElementById(`rx-${eye}-${field}`);
+                        sel.value = rxData[eye][field] || '';
+                        rxChanged(sel);
+                    });
+                }
+            });
+        }
+
+        function resetRxData() {
+            ['r', 'l'].forEach(eye => {
+                ['sph', 'cyl', 'axis', 'add'].forEach(field => {
+                    const sel = document.getElementById(`rx-${eye}-${field}`);
+                    sel.value = '';
+                    sel.classList.remove('has-value');
+                });
+            });
+        }
+
+        function formatRxHtml(rxData) {
+            if (!rxData) return '';
+            const r = rxData.r || {};
+            const l = rxData.l || {};
+            const hasData = [r.sph, r.cyl, r.axis, r.add, l.sph, l.cyl, l.axis, l.add].some(v => v);
+            if (!hasData) return '';
+
+            return `
+                <div class="rx-display">
+                    <table class="rx-display-table">
+                        <thead>
+                            <tr>
+                                <th></th>
+                                <th>度數 SPH</th>
+                                <th>散光 CYL</th>
+                                <th>線位 AXIS</th>
+                                <th>老花 ADD</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>R 右</td>
+                                <td>${r.sph || '-'}</td>
+                                <td>${r.cyl || '-'}</td>
+                                <td>${r.axis || '-'}</td>
+                                <td>${r.add || '-'}</td>
+                            </tr>
+                            <tr>
+                                <td>L 左</td>
+                                <td>${l.sph || '-'}</td>
+                                <td>${l.cyl || '-'}</td>
+                                <td>${l.axis || '-'}</td>
+                                <td>${l.add || '-'}</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            `;
+        }
+
         // ============ State Management ============
         let db = null;
         let storage = null;
@@ -1066,6 +1354,7 @@ service firebase.storage {
                     number: customerData.number,
                     oldNumber: customerData.oldNumber || '',
                     lensTypes: customerData.lensTypes || [],
+                    rx: customerData.rx || {},
                     photos: photoUrls,
                     createdAt: firebase.firestore.FieldValue.serverTimestamp(),
                     expiresAt: new Date(Date.now() + EXPIRY_DAYS * 24 * 60 * 60 * 1000)
@@ -1095,6 +1384,7 @@ service firebase.storage {
                         number: customerData.number,
                         oldNumber: customerData.oldNumber,
                         lensTypes: customerData.lensTypes,
+                        rx: customerData.rx,
                         photos: customerData.photos
                     };
                     saveLocalData(data);
@@ -1137,6 +1427,7 @@ service firebase.storage {
                     number: customerData.number,
                     oldNumber: customerData.oldNumber || '',
                     lensTypes: customerData.lensTypes || [],
+                    rx: customerData.rx || {},
                     photos: photoUrls,
                     updatedAt: firebase.firestore.FieldValue.serverTimestamp()
                 };
@@ -1434,6 +1725,7 @@ service firebase.storage {
                         ${customer.oldNumber ? `<div>📁 客人舊號碼：${escapeHtml(customer.oldNumber)}</div>` : ''}
                         <div class="date-badge">建立時間：${dateStr}</div>
                     </div>
+                    ${formatRxHtml(customer.rx)}
                 </div>
                 ${photosHtml || '<div class="empty-state">未有相片</div>'}
                 <button class="btn btn-primary" onclick="editCustomer('${id}')" style="margin-top: 20px;">
@@ -1482,6 +1774,9 @@ service firebase.storage {
                     btn.classList.remove('selected');
                 }
             });
+            
+            // Set prescription data
+            setRxData(customer.rx);
             
             // Set photos
             Object.keys(uploadedPhotos).forEach(key => {
@@ -1644,6 +1939,9 @@ service firebase.storage {
                 btn.classList.remove('selected');
             });
             
+            // Reset prescription data
+            resetRxData();
+            
             // Reset photos
             Object.keys(uploadedPhotos).forEach(key => {
                 uploadedPhotos[key] = null;
@@ -1779,6 +2077,7 @@ service firebase.storage {
                     number: document.getElementById('customerNumber').value,
                     oldNumber: document.getElementById('customerOldNumber').value.trim(),
                     lensTypes: [...selectedLensTypes],
+                    rx: getRxData(),
                     photos: { ...uploadedPhotos }
                 };
 
@@ -1819,6 +2118,7 @@ service firebase.storage {
             const firebaseOk = initFirebase();
             setupPhotoUploads();
             setupSearch();
+            initRxSelects();
             
             // Setup lens type buttons (multi-select toggle)
             document.querySelectorAll('.lens-type-btn').forEach(btn => {
