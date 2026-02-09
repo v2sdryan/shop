@@ -38,6 +38,35 @@
             padding-bottom: 80px;
         }
 
+        /* Desktop layout */
+        @media (min-width: 600px) {
+            body {
+                background: #e8eef0;
+            }
+
+            .header {
+                max-width: 500px;
+                margin: 0 auto;
+                border-radius: 0 0 12px 12px;
+            }
+
+            .page {
+                max-width: 500px;
+                margin: 0 auto;
+            }
+
+            .nav {
+                max-width: 500px;
+                left: 50%;
+                transform: translateX(-50%);
+                border-radius: 12px 12px 0 0;
+            }
+
+            .toast {
+                max-width: 400px;
+            }
+        }
+
         /* Header */
         .header {
             background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
@@ -1273,10 +1302,6 @@ service firebase.storage {
             <span class="nav-icon">➕</span>
             上載
         </button>
-        <button class="nav-item" onclick="showPage('settings')">
-            <span class="nav-icon">⚙️</span>
-            設定
-        </button>
     </nav>
 
     <!-- Toast -->
@@ -1948,9 +1973,10 @@ service firebase.storage {
             document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
             
             document.getElementById(`page-${pageName}`).classList.add('active');
-            document.querySelectorAll('.nav-item')[
-                pageName === 'home' ? 0 : pageName === 'upload' ? 1 : 2
-            ].classList.add('active');
+            const navIndex = pageName === 'home' ? 0 : pageName === 'upload' ? 1 : -1;
+            if (navIndex >= 0) {
+                document.querySelectorAll('.nav-item')[navIndex].classList.add('active');
+            }
 
             if (pageName === 'home') {
                 // Clear selections when returning to home page
@@ -1961,8 +1987,6 @@ service firebase.storage {
                 if (selectedLensTypes.length === 0 && !Object.values(uploadedPhotos).some(p => p)) {
                     document.getElementById('customerNumber').value = generateCustomerNumber();
                 }
-            } else if (pageName === 'settings') {
-                updateSettingsUI().catch(console.error);
             }
         }
 
@@ -2468,7 +2492,25 @@ service firebase.storage {
                 showToast(isEditing ? '✓ 資料已更新' : '✓ 資料已儲存', 'success');
                 
                 if (isEditing) {
-                    // Stay on the same page, keep editing mode
+                    // Stay on the same page, reload updated data
+                    const updatedCustomers = await loadCustomers();
+                    const updatedCustomer = updatedCustomers.find(c => c.id === window.editingCustomerId);
+                    if (updatedCustomer) {
+                        // Re-populate form with fresh data
+                        document.getElementById('customerNumber').value = updatedCustomer.number || '';
+                        document.getElementById('customerOldNumber').value = updatedCustomer.oldNumber || '';
+                        selectedLensTypes = [...(updatedCustomer.lensTypes || [])];
+                        document.querySelectorAll('.lens-type-btn').forEach(btn => {
+                            btn.classList.toggle('selected', selectedLensTypes.includes(btn.dataset.type));
+                        });
+                        setRxData(updatedCustomer.rx);
+                        Object.keys(uploadedPhotos).forEach(key => {
+                            uploadedPhotos[key] = updatedCustomer.photos?.[key] || null;
+                        });
+                        document.querySelectorAll('.photo-upload-item').forEach(item => {
+                            updatePhotoPreview(item, uploadedPhotos[item.dataset.type]);
+                        });
+                    }
                     submitBtn.disabled = false;
                     submitBtn.textContent = '更新資料';
                     return;
