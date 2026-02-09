@@ -1298,7 +1298,7 @@ service firebase.storage {
             <span class="nav-icon">🏠</span>
             首頁
         </button>
-        <button class="nav-item" onclick="showPage('upload')">
+        <button class="nav-item" onclick="newRecord()">
             <span class="nav-icon">➕</span>
             上載
         </button>
@@ -1988,6 +1988,12 @@ service firebase.storage {
                     document.getElementById('customerNumber').value = generateCustomerNumber();
                 }
             }
+        }
+
+        function newRecord() {
+            window.editingCustomerId = null;
+            resetUploadForm();
+            showPage('upload');
         }
 
         async function refreshCustomerList() {
