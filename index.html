@@ -977,6 +977,32 @@
             align-items: center;
             gap: 8px;
         }
+
+        .record-view-toggle {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-bottom: 16px;
+        }
+
+        .record-view-btn {
+            border: 1.5px solid var(--border);
+            border-radius: 10px;
+            background: var(--bg-card);
+            color: var(--text-light);
+            font-family: inherit;
+            font-size: 0.95rem;
+            font-weight: 500;
+            padding: 12px 10px;
+            cursor: pointer;
+            box-shadow: 0 2px 8px var(--shadow);
+        }
+
+        .record-view-btn.active {
+            border-color: var(--primary);
+            background: var(--primary);
+            color: white;
+        }
     </style>
 </head>
 <body>
@@ -995,7 +1021,7 @@
         <div class="stats-grid">
             <div class="stat-card">
                 <div class="stat-number" id="totalCustomers">0</div>
-                <div class="stat-label">今日客人</div>
+                <div class="stat-label" id="recordCountLabel">今日客人</div>
             </div>
             <div class="stat-card">
                 <div class="stat-number" id="totalPhotos">0</div>
@@ -1005,6 +1031,15 @@
 
         <div class="expiry-warning">
             ⚠️ 資料會喺 3 日後自動清除，請及時處理
+        </div>
+
+        <div class="record-view-toggle">
+            <button type="button" id="todayRecordsBtn" class="record-view-btn active" onclick="setRecordView('today')">
+                今日紀錄
+            </button>
+            <button type="button" id="pastRecordsBtn" class="record-view-btn" onclick="setRecordView('past')">
+                過往紀錄
+            </button>
         </div>
 
         <div class="selection-controls">
@@ -1635,6 +1670,10 @@ service firebase.storage {
         const previewObjectUrls = {};
         const MAX_IMAGE_DIMENSION = 1400;
         const JPEG_QUALITY = 0.72;
+        const CUSTOMER_LIST_LIMIT = 30;
+        const CUSTOMER_LOAD_TIMEOUT_MS = 5000;
+        let cachedCustomers = [];
+        let currentRecordView = 'today';
 
         // Selection state
         let selectedCustomers = new Set();
@@ -1863,37 +1902,108 @@ service firebase.storage {
             }
         }
 
-        async function loadCustomers() {
+        function withTimeout(promise, ms, message) {
+            return Promise.race([
+                promise,
+                new Promise((_, reject) => {
+                    setTimeout(() => reject(new Error(message)), ms);
+                })
+            ]);
+        }
+
+        function normalizeCustomerDoc(doc) {
+            const data = doc.data();
+            return {
+                id: doc.id,
+                ...data,
+                createdAt: data.createdAt?.toMillis() || Date.now(),
+                source: 'firebase'
+            };
+        }
+
+        function getTodayBounds() {
+            const today = new Date();
+            const start = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+            const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+            return { start, end, startMs: start.getTime(), endMs: end.getTime() };
+        }
+
+        function isTodayRecord(record) {
+            const { startMs, endMs } = getTodayBounds();
+            return record.createdAt >= startMs && record.createdAt < endMs;
+        }
+
+        async function loadCustomers(view = currentRecordView) {
             let customers = [];
 
             // Load local data first
-            customers = getLocalData();
+            customers = getLocalData().filter(record => {
+                const today = isTodayRecord(record);
+                return view === 'today' ? today : !today;
+            });
 
             // Try to load from Firebase
             if (firebaseInitialized && db) {
                 try {
-                    const snapshot = await db.collection('customers')
-                        .orderBy('createdAt', 'desc')
-                        .get();
+                    const { start, end } = getTodayBounds();
+                    let query = db.collection('customers');
+                    if (view === 'today') {
+                        query = query.where('createdAt', '>=', start).where('createdAt', '<', end);
+                    } else {
+                        query = query.where('createdAt', '<', start);
+                    }
+                    query = query.orderBy('createdAt', 'desc').limit(CUSTOMER_LIST_LIMIT);
+                    const snapshot = await withTimeout(
+                        query.get(),
+                        CUSTOMER_LOAD_TIMEOUT_MS,
+                        '雲端資料載入太耐'
+                    );
 
                     snapshot.forEach(doc => {
-                        const data = doc.data();
-                        customers.push({
-                            id: doc.id,
-                            ...data,
-                            createdAt: data.createdAt?.toMillis() || Date.now(),
-                            source: 'firebase'
-                        });
+                        customers.push(normalizeCustomerDoc(doc));
                     });
                 } catch (error) {
                     console.error('Firebase load error:', error);
+                    if (cachedCustomers.length > 0) {
+                        return cachedCustomers.filter(record => {
+                            const today = isTodayRecord(record);
+                            return view === 'today' ? today : !today;
+                        });
+                    }
+                    showToast('雲端載入較慢，先顯示已載入資料', 'error');
                 }
             }
 
             // Sort by creation date (newest first)
             customers.sort((a, b) => b.createdAt - a.createdAt);
+            cachedCustomers = customers;
             
             return customers;
+        }
+
+        async function getCustomerById(id) {
+            if (id.startsWith('local_')) {
+                return getLocalData().find(c => c.id === id) || null;
+            }
+
+            const cached = cachedCustomers.find(c => c.id === id);
+            if (cached) return cached;
+
+            if (firebaseInitialized && db) {
+                try {
+                    const doc = await withTimeout(
+                        db.collection('customers').doc(id).get(),
+                        CUSTOMER_LOAD_TIMEOUT_MS,
+                        '客人資料載入太耐'
+                    );
+                    return doc.exists ? normalizeCustomerDoc(doc) : null;
+                } catch (error) {
+                    console.error('Firebase detail load error:', error);
+                    showToast('客人資料載入較慢，請再試一次', 'error');
+                }
+            }
+
+            return null;
         }
 
         async function deleteCustomer(id) {
@@ -2033,18 +2143,24 @@ service firebase.storage {
             showPage('upload');
         }
 
+        function setRecordView(view) {
+            currentRecordView = view;
+            selectedCustomers.clear();
+            document.getElementById('searchInput').value = '';
+            document.getElementById('todayRecordsBtn').classList.toggle('active', view === 'today');
+            document.getElementById('pastRecordsBtn').classList.toggle('active', view === 'past');
+            refreshCustomerList();
+        }
+
         async function refreshCustomerList() {
             const listEl = document.getElementById('customerList');
             listEl.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
 
-            const customers = await loadCustomers();
+            const customers = await loadCustomers(currentRecordView);
             
             // Update stats - filter today's customers
-            const today = new Date();
-            const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
-            const todayEnd = todayStart + 24 * 60 * 60 * 1000;
-            const todayCustomers = customers.filter(c => c.createdAt >= todayStart && c.createdAt < todayEnd);
-            document.getElementById('totalCustomers').textContent = todayCustomers.length;
+            document.getElementById('totalCustomers').textContent = customers.length;
+            document.getElementById('recordCountLabel').textContent = currentRecordView === 'today' ? '今日客人' : '過往紀錄';
             let photoCount = 0;
             customers.forEach(c => {
                 photoCount += Object.values(c.photos || {}).filter(p => p).length;
@@ -2055,7 +2171,7 @@ service firebase.storage {
                 listEl.innerHTML = `
                     <div class="empty-state">
                         <div class="empty-state-icon">📋</div>
-                        <div class="empty-state-text">未有客人資料<br>點擊「上載」新增</div>
+                        <div class="empty-state-text">${currentRecordView === 'today' ? '今日未有客人資料<br>點擊「上載」新增' : '未有過往紀錄'}</div>
                     </div>
                 `;
                 return;
@@ -2107,8 +2223,7 @@ service firebase.storage {
             const detailEl = document.getElementById('customerDetail');
             detailEl.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
 
-            const customers = await loadCustomers();
-            const customer = customers.find(c => c.id === id);
+            const customer = await getCustomerById(id);
 
             if (!customer) {
                 detailEl.innerHTML = '<div class="empty-state">找不到客人資料</div>';
@@ -2181,8 +2296,7 @@ service firebase.storage {
         }
 
         async function editCustomer(id) {
-            const customers = await loadCustomers();
-            const customer = customers.find(c => c.id === id);
+            const customer = await getCustomerById(id);
             
             if (!customer) {
                 showToast('找不到客人資料', 'error');
@@ -2523,7 +2637,7 @@ service firebase.storage {
             const searchInput = document.getElementById('searchInput');
             searchInput.addEventListener('input', async (e) => {
                 const query = e.target.value.toLowerCase().trim();
-                const customers = await loadCustomers();
+                const customers = await loadCustomers(currentRecordView);
                 const listEl = document.getElementById('customerList');
 
                 const filtered = query ? customers.filter(c => {
