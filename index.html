@@ -4,9 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>驗眼資料管理系統</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@300;400;500;700&display=swap" rel="stylesheet">
     <style>
         :root {
             --primary: #1a5f7a;
@@ -31,7 +28,7 @@
         }
 
         body {
-            font-family: 'Noto Sans TC', sans-serif;
+            font-family: -apple-system, BlinkMacSystemFont, "PingFang HK", "PingFang TC", "Microsoft JhengHei", sans-serif;
             background: var(--bg);
             color: var(--text);
             min-height: 100vh;
@@ -1690,6 +1687,7 @@ service firebase.storage {
         // ============ Local Storage (Fallback) ============
         const LOCAL_STORAGE_KEY = 'eyeExamData';
         const CUSTOMER_SUMMARY_CACHE_KEY = 'eyeExamCustomerSummaryCache';
+        const CUSTOMER_SUMMARIES_COLLECTION = 'customerSummaries';
         const EXPIRY_DAYS = 3;
 
         function getLocalData() {
@@ -1744,6 +1742,15 @@ service firebase.storage {
         function saveCachedSummaries(view, records) {
             const cache = getSummaryCache();
             cache[view] = records.map(toCustomerSummary);
+            localStorage.setItem(CUSTOMER_SUMMARY_CACHE_KEY, JSON.stringify(cache));
+        }
+
+        function removeCachedCustomer(id) {
+            cachedCustomers = cachedCustomers.filter(c => c.id !== id);
+            const cache = getSummaryCache();
+            Object.keys(cache).forEach(view => {
+                cache[view] = (cache[view] || []).filter(c => c.id !== id);
+            });
             localStorage.setItem(CUSTOMER_SUMMARY_CACHE_KEY, JSON.stringify(cache));
         }
 
@@ -1836,6 +1843,9 @@ service firebase.storage {
                     }
                 }
 
+                const createdAt = new Date();
+                const expiresAt = new Date(Date.now() + EXPIRY_DAYS * 24 * 60 * 60 * 1000);
+
                 // Save to Firestore
                 const docData = {
                     number: customerData.number,
@@ -1843,15 +1853,21 @@ service firebase.storage {
                     lensTypes: customerData.lensTypes || [],
                     rx: customerData.rx || {},
                     photos: photoUrls,
-                    createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-                    expiresAt: new Date(Date.now() + EXPIRY_DAYS * 24 * 60 * 60 * 1000)
+                    createdAt,
+                    expiresAt
                 };
                 
                 console.log('Saving to Firestore...');
                 const docRef = await db.collection('customers').add(docData);
+                await saveCustomerSummary(docRef.id, {
+                    ...docData,
+                    id: docRef.id,
+                    createdAt: createdAt.getTime(),
+                    createdAtDate: createdAt
+                });
                 console.log('Saved with ID:', docRef.id);
 
-                return { id: docRef.id, ...customerData, photos: photoUrls };
+                return { id: docRef.id, ...customerData, photos: photoUrls, createdAt: createdAt.getTime() };
             } catch (error) {
                 console.error('Firebase save error:', error);
                 showToast('雲端儲存失敗，已存到本機', 'error');
@@ -1927,6 +1943,13 @@ service firebase.storage {
                 };
                 
                 await db.collection('customers').doc(id).update(docData);
+                const existing = cachedCustomers.find(c => c.id === id) || {};
+                await saveCustomerSummary(id, {
+                    ...existing,
+                    ...customerData,
+                    photos: photoUrls,
+                    createdAt: existing.createdAt || Date.now()
+                });
                 return { id, ...customerData, photos: photoUrls };
             } catch (error) {
                 console.error('Firebase update error:', error);
@@ -1953,6 +1976,53 @@ service firebase.storage {
             };
         }
 
+        function normalizeCustomerSummaryDoc(doc) {
+            const data = doc.data();
+            return {
+                id: data.customerId || doc.id,
+                number: data.number || '',
+                oldNumber: data.oldNumber || '',
+                lensTypes: data.lensTypes || [],
+                createdAt: data.createdAt?.toMillis() || Date.now(),
+                photoCount: data.photoCount || 0,
+                source: 'firebase-summary',
+                summaryOnly: true
+            };
+        }
+
+        function buildCustomerSummary(record) {
+            return {
+                customerId: record.id,
+                number: record.number || '',
+                oldNumber: record.oldNumber || '',
+                lensTypes: record.lensTypes || [],
+                createdAt: record.createdAtDate || new Date(record.createdAt || Date.now()),
+                photoCount: getPhotoCount(record),
+                expiresAt: record.expiresAt || new Date(Date.now() + EXPIRY_DAYS * 24 * 60 * 60 * 1000),
+                updatedAt: new Date()
+            };
+        }
+
+        async function saveCustomerSummary(id, record) {
+            if (!firebaseInitialized || !db) return;
+            try {
+                await db.collection(CUSTOMER_SUMMARIES_COLLECTION)
+                    .doc(id)
+                    .set(buildCustomerSummary({ ...record, id }), { merge: true });
+            } catch (error) {
+                console.warn('Summary save skipped:', error);
+            }
+        }
+
+        async function deleteCustomerSummary(id) {
+            if (!firebaseInitialized || !db) return;
+            try {
+                await db.collection(CUSTOMER_SUMMARIES_COLLECTION).doc(id).delete();
+            } catch (error) {
+                console.warn('Summary delete skipped:', error);
+            }
+        }
+
         function getTodayBounds() {
             const today = new Date();
             const start = new Date(today.getFullYear(), today.getMonth(), today.getDate());
@@ -1970,6 +2040,46 @@ service firebase.storage {
             return Object.values(record.photos || {}).filter(p => p).length;
         }
 
+        function buildCustomerQuery(collectionName, view) {
+            const { start, end } = getTodayBounds();
+            let query = db.collection(collectionName);
+            if (view === 'today') {
+                query = query.where('createdAt', '>=', start).where('createdAt', '<', end);
+            } else {
+                query = query.where('createdAt', '<', start);
+            }
+            return query.orderBy('createdAt', 'desc').limit(CUSTOMER_LIST_LIMIT);
+        }
+
+        async function loadCustomerSummaries(view) {
+            const snapshot = await withTimeout(
+                buildCustomerQuery(CUSTOMER_SUMMARIES_COLLECTION, view).get(),
+                CUSTOMER_LOAD_TIMEOUT_MS,
+                '雲端摘要載入太耐'
+            );
+            const summaries = [];
+            snapshot.forEach(doc => {
+                summaries.push(normalizeCustomerSummaryDoc(doc));
+            });
+            return summaries;
+        }
+
+        async function loadFullCustomers(view) {
+            const snapshot = await withTimeout(
+                buildCustomerQuery('customers', view).get(),
+                CUSTOMER_LOAD_TIMEOUT_MS,
+                '雲端資料載入太耐'
+            );
+            const records = [];
+            snapshot.forEach(doc => {
+                records.push(normalizeCustomerDoc(doc));
+            });
+            records.forEach(record => {
+                saveCustomerSummary(record.id, record);
+            });
+            return records;
+        }
+
         async function loadCustomers(view = currentRecordView) {
             let customers = [];
 
@@ -1982,23 +2092,11 @@ service firebase.storage {
             // Try to load from Firebase
             if (firebaseInitialized && db) {
                 try {
-                    const { start, end } = getTodayBounds();
-                    let query = db.collection('customers');
-                    if (view === 'today') {
-                        query = query.where('createdAt', '>=', start).where('createdAt', '<', end);
-                    } else {
-                        query = query.where('createdAt', '<', start);
-                    }
-                    query = query.orderBy('createdAt', 'desc').limit(CUSTOMER_LIST_LIMIT);
-                    const snapshot = await withTimeout(
-                        query.get(),
-                        CUSTOMER_LOAD_TIMEOUT_MS,
-                        '雲端資料載入太耐'
-                    );
-
-                    snapshot.forEach(doc => {
-                        customers.push(normalizeCustomerDoc(doc));
-                    });
+                    const summaries = await loadCustomerSummaries(view);
+                    const cloudCustomers = summaries.length >= CUSTOMER_LIST_LIMIT
+                        ? summaries
+                        : await loadFullCustomers(view);
+                    customers.push(...cloudCustomers);
                 } catch (error) {
                     console.error('Firebase load error:', error);
                     if (cachedCustomers.length > 0) {
@@ -2034,7 +2132,10 @@ service firebase.storage {
                         CUSTOMER_LOAD_TIMEOUT_MS,
                         '客人資料載入太耐'
                     );
-                    return doc.exists ? normalizeCustomerDoc(doc) : null;
+                    if (!doc.exists) return null;
+                    const customer = normalizeCustomerDoc(doc);
+                    cachedCustomers = cachedCustomers.map(c => c.id === id ? customer : c);
+                    return customer;
                 } catch (error) {
                     console.error('Firebase detail load error:', error);
                     showToast('客人資料載入較慢，請再試一次', 'error');
@@ -2049,11 +2150,15 @@ service firebase.storage {
                 deleteLocalRecord(id);
             } else if (firebaseInitialized && db) {
                 try {
-                    await db.collection('customers').doc(id).delete();
+                    await Promise.all([
+                        db.collection('customers').doc(id).delete(),
+                        deleteCustomerSummary(id)
+                    ]);
                 } catch (error) {
                     console.error('Delete error:', error);
                 }
             }
+            removeCachedCustomer(id);
         }
 
         // ============ Selection Functions ============
@@ -2258,6 +2363,9 @@ service firebase.storage {
             }
 
             const customers = await loadCustomers(currentRecordView);
+            if (document.getElementById('searchInput').value.trim()) {
+                return;
+            }
             renderCustomerList(customers, emptyText);
         }
 
@@ -2330,9 +2438,9 @@ service firebase.storage {
             `;
         }
 
-        function confirmDelete(id) {
+        async function confirmDelete(id) {
             if (confirm('確定要刪除此客人紀錄？')) {
-                deleteCustomer(id);
+                await deleteCustomer(id);
                 showToast('已刪除紀錄', 'success');
                 showPage('home');
             }
@@ -2681,15 +2789,25 @@ service firebase.storage {
             searchInput.addEventListener('input', async (e) => {
                 const query = e.target.value.toLowerCase().trim();
                 const cached = cachedCustomers.length > 0 ? cachedCustomers : getCachedSummaries(currentRecordView);
-                const customers = cached.length > 0 ? cached : await loadCustomers(currentRecordView);
+                let customers = cached.length > 0 ? cached : await loadCustomers(currentRecordView);
                 const listEl = document.getElementById('customerList');
 
-                const filtered = query ? customers.filter(c => {
+                let filtered = query ? customers.filter(c => {
                     const types = c.lensTypes || (c.lensType ? [c.lensType] : []);
                     return (c.number && c.number.toLowerCase().includes(query)) || 
                            (c.oldNumber && c.oldNumber.toLowerCase().includes(query)) ||
                            types.some(t => t.includes(query));
                 }) : customers;
+
+                if (query && filtered.length === 0 && cached.length > 0) {
+                    customers = await loadCustomers(currentRecordView);
+                    filtered = customers.filter(c => {
+                        const types = c.lensTypes || (c.lensType ? [c.lensType] : []);
+                        return (c.number && c.number.toLowerCase().includes(query)) ||
+                               (c.oldNumber && c.oldNumber.toLowerCase().includes(query)) ||
+                               types.some(t => t.includes(query));
+                    });
+                }
 
                 if (filtered.length === 0) {
                     listEl.innerHTML = `
