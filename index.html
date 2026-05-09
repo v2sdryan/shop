@@ -1671,7 +1671,7 @@ service firebase.storage {
         const MAX_IMAGE_DIMENSION = 1400;
         const JPEG_QUALITY = 0.72;
         const CUSTOMER_LIST_LIMIT = 30;
-        const CUSTOMER_LOAD_TIMEOUT_MS = 5000;
+        const CUSTOMER_LOAD_TIMEOUT_MS = 3000;
         let cachedCustomers = [];
         let currentRecordView = 'today';
 
@@ -1689,6 +1689,7 @@ service firebase.storage {
 
         // ============ Local Storage (Fallback) ============
         const LOCAL_STORAGE_KEY = 'eyeExamData';
+        const CUSTOMER_SUMMARY_CACHE_KEY = 'eyeExamCustomerSummaryCache';
         const EXPIRY_DAYS = 3;
 
         function getLocalData() {
@@ -1726,6 +1727,37 @@ service firebase.storage {
             const data = getLocalData();
             const filtered = data.filter(r => r.id !== id);
             saveLocalData(filtered);
+        }
+
+        function getSummaryCache() {
+            try {
+                return JSON.parse(localStorage.getItem(CUSTOMER_SUMMARY_CACHE_KEY)) || {};
+            } catch (error) {
+                return {};
+            }
+        }
+
+        function getCachedSummaries(view) {
+            return getSummaryCache()[view] || [];
+        }
+
+        function saveCachedSummaries(view, records) {
+            const cache = getSummaryCache();
+            cache[view] = records.map(toCustomerSummary);
+            localStorage.setItem(CUSTOMER_SUMMARY_CACHE_KEY, JSON.stringify(cache));
+        }
+
+        function toCustomerSummary(record) {
+            return {
+                id: record.id,
+                number: record.number || '',
+                oldNumber: record.oldNumber || '',
+                lensTypes: record.lensTypes || (record.lensType ? [record.lensType] : []),
+                createdAt: record.createdAt || Date.now(),
+                photoCount: getPhotoCount(record),
+                source: record.source || 'cache',
+                summaryOnly: true
+            };
         }
 
         // ============ Firebase Setup ============
@@ -1933,6 +1965,11 @@ service firebase.storage {
             return record.createdAt >= startMs && record.createdAt < endMs;
         }
 
+        function getPhotoCount(record) {
+            if (typeof record.photoCount === 'number') return record.photoCount;
+            return Object.values(record.photos || {}).filter(p => p).length;
+        }
+
         async function loadCustomers(view = currentRecordView) {
             let customers = [];
 
@@ -1977,6 +2014,7 @@ service firebase.storage {
             // Sort by creation date (newest first)
             customers.sort((a, b) => b.createdAt - a.createdAt);
             cachedCustomers = customers;
+            saveCachedSummaries(view, customers);
             
             return customers;
         }
@@ -1987,7 +2025,7 @@ service firebase.storage {
             }
 
             const cached = cachedCustomers.find(c => c.id === id);
-            if (cached) return cached;
+            if (cached && !cached.summaryOnly) return cached;
 
             if (firebaseInitialized && db) {
                 try {
@@ -2152,18 +2190,13 @@ service firebase.storage {
             refreshCustomerList();
         }
 
-        async function refreshCustomerList() {
+        function renderCustomerList(customers, emptyText) {
             const listEl = document.getElementById('customerList');
-            listEl.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
-
-            const customers = await loadCustomers(currentRecordView);
-            
-            // Update stats - filter today's customers
             document.getElementById('totalCustomers').textContent = customers.length;
             document.getElementById('recordCountLabel').textContent = currentRecordView === 'today' ? '今日客人' : '過往紀錄';
             let photoCount = 0;
             customers.forEach(c => {
-                photoCount += Object.values(c.photos || {}).filter(p => p).length;
+                photoCount += getPhotoCount(c);
             });
             document.getElementById('totalPhotos').textContent = photoCount;
 
@@ -2171,7 +2204,7 @@ service firebase.storage {
                 listEl.innerHTML = `
                     <div class="empty-state">
                         <div class="empty-state-icon">📋</div>
-                        <div class="empty-state-text">${currentRecordView === 'today' ? '今日未有客人資料<br>點擊「上載」新增' : '未有過往紀錄'}</div>
+                        <div class="empty-state-text">${emptyText}</div>
                     </div>
                 `;
                 return;
@@ -2185,18 +2218,15 @@ service firebase.storage {
             };
 
             listEl.innerHTML = customers.map(c => {
-                const photoCount = Object.values(c.photos || {}).filter(p => p).length;
                 const date = new Date(c.createdAt);
                 const dateStr = `${date.getMonth() + 1}月${date.getDate()}日 ${date.getHours()}:${String(date.getMinutes()).padStart(2, '0')}`;
-                
-                // Handle both old single lensType and new lensTypes array
                 const types = c.lensTypes || (c.lensType ? [c.lensType] : []);
                 const lensDisplay = types.map(t => `${lensTypeIcons[t] || '📋'} ${t}`).join(' · ') || '未選擇';
-                
+
                 return `
                     <div class="customer-card ${selectedCustomers.has(c.id) ? 'selected' : ''}">
                         <div class="customer-card-checkbox">
-                            <input type="checkbox" value="${c.id}" 
+                            <input type="checkbox" value="${c.id}"
                                 ${selectedCustomers.has(c.id) ? 'checked' : ''}
                                 onchange="toggleCustomerSelection('${c.id}', event)">
                         </div>
@@ -2205,17 +2235,30 @@ service firebase.storage {
                             <div class="customer-meta">
                                 <span>${lensDisplay}</span>
                                 ${c.oldNumber ? `<span>📁 舊號: ${escapeHtml(c.oldNumber)}</span>` : ''}
-                                <span><span class="badge badge-count">${photoCount} 張相片</span></span>
+                                <span><span class="badge badge-count">${getPhotoCount(c)} 張相片</span></span>
                             </div>
                             <div class="date-badge">🕐 ${dateStr}</div>
                         </div>
                     </div>
-
                 `;
             }).join('');
-            
-            // Update selection UI after rendering
+
             updateSelectionUI();
+        }
+
+        async function refreshCustomerList() {
+            const listEl = document.getElementById('customerList');
+            const emptyText = currentRecordView === 'today' ? '今日未有客人資料<br>點擊「上載」新增' : '未有過往紀錄';
+            const cachedSummaries = getCachedSummaries(currentRecordView);
+            if (cachedSummaries.length > 0) {
+                cachedCustomers = cachedSummaries;
+                renderCustomerList(cachedSummaries, emptyText);
+            } else {
+                listEl.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+            }
+
+            const customers = await loadCustomers(currentRecordView);
+            renderCustomerList(customers, emptyText);
         }
 
         async function showCustomerDetail(id) {
@@ -2637,7 +2680,8 @@ service firebase.storage {
             const searchInput = document.getElementById('searchInput');
             searchInput.addEventListener('input', async (e) => {
                 const query = e.target.value.toLowerCase().trim();
-                const customers = await loadCustomers(currentRecordView);
+                const cached = cachedCustomers.length > 0 ? cachedCustomers : getCachedSummaries(currentRecordView);
+                const customers = cached.length > 0 ? cached : await loadCustomers(currentRecordView);
                 const listEl = document.getElementById('customerList');
 
                 const filtered = query ? customers.filter(c => {
@@ -2665,7 +2709,7 @@ service firebase.storage {
                 };
 
                 listEl.innerHTML = filtered.map(c => {
-                    const photoCount = Object.values(c.photos || {}).filter(p => p).length;
+                    const photoCount = getPhotoCount(c);
                     const date = new Date(c.createdAt);
                     const dateStr = `${date.getMonth() + 1}月${date.getDate()}日 ${date.getHours()}:${String(date.getMinutes()).padStart(2, '0')}`;
                     
