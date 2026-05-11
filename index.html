@@ -2181,6 +2181,45 @@ service firebase.storage {
             return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
         }
 
+        async function getPhotoByteSize(url) {
+            if (!url) return 0;
+            if (url.startsWith('data:')) return dataUrlToBlob(url).size;
+            const response = await fetch(url, { cache: 'force-cache' });
+            const blob = await response.blob();
+            return blob.size;
+        }
+
+        async function updateMissingPhotoSize(customer, id, dateStr) {
+            const badge = document.getElementById('detailDateBadge');
+            if (!badge || getTotalPhotoBytes(customer) > 0) return;
+
+            try {
+                const entries = Object.entries(customer.photos || {}).filter(([, url]) => url);
+                if (entries.length === 0) return;
+
+                const photoSizes = {};
+                await Promise.all(entries.map(async ([type, url]) => {
+                    const bytes = await getPhotoByteSize(url);
+                    if (bytes) photoSizes[type] = bytes;
+                }));
+
+                const totalPhotoBytes = Object.values(photoSizes).reduce((sum, bytes) => sum + bytes, 0);
+                const formatted = formatBytes(totalPhotoBytes);
+                if (!formatted) return;
+
+                badge.textContent = `建立時間：${dateStr} · ${formatted}`;
+
+                if (firebaseInitialized && db && !id.startsWith('local_')) {
+                    await Promise.all([
+                        db.collection('customers').doc(id).set({ photoSizes, totalPhotoBytes }, { merge: true }),
+                        db.collection(CUSTOMER_SUMMARIES_COLLECTION).doc(id).set({ totalPhotoBytes }, { merge: true })
+                    ]);
+                }
+            } catch (error) {
+                console.warn('Photo size calculation skipped:', error);
+            }
+        }
+
         function buildCustomerQuery(collectionName, view) {
             const { start, end } = getTodayBounds();
             let query = db.collection(collectionName);
@@ -2566,7 +2605,7 @@ service firebase.storage {
                             ${lensTypeBadges}
                         </div>
                         ${customer.oldNumber ? `<div>📁 客人舊號碼：${escapeHtml(customer.oldNumber)}</div>` : ''}
-                        <div class="date-badge">建立時間：${dateStr}${totalPhotoSize ? ` · ${totalPhotoSize}` : ''}</div>
+                        <div class="date-badge" id="detailDateBadge">建立時間：${dateStr}${totalPhotoSize ? ` · ${totalPhotoSize}` : ''}</div>
                     </div>
                     ${formatRxHtml(customer.rx)}
                 </div>
@@ -2578,6 +2617,8 @@ service firebase.storage {
                     🗑️ 刪除此紀錄
                 </button>
             `;
+
+            updateMissingPhotoSize(customer, id, dateStr);
         }
 
         async function confirmDelete(id) {
