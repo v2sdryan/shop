@@ -2184,9 +2184,33 @@ service firebase.storage {
         async function getPhotoByteSize(url) {
             if (!url) return 0;
             if (url.startsWith('data:')) return dataUrlToBlob(url).size;
-            const response = await fetch(url, { cache: 'force-cache' });
-            const blob = await response.blob();
-            return blob.size;
+
+            if (storage && url.includes('firebasestorage.googleapis.com')) {
+                try {
+                    const metadata = await storage.refFromURL(url).getMetadata();
+                    return Number(metadata.size) || 0;
+                } catch (error) {
+                    console.warn('Storage metadata size failed:', error);
+                }
+            }
+
+            try {
+                const head = await fetch(url, { method: 'HEAD', cache: 'force-cache' });
+                const length = Number(head.headers.get('content-length'));
+                if (length) return length;
+            } catch (error) {
+                console.warn('HEAD photo size failed:', error);
+            }
+
+            try {
+                const response = await fetch(url, { cache: 'force-cache' });
+                const blob = await response.blob();
+                return blob.size;
+            } catch (error) {
+                console.warn('Blob photo size failed:', error);
+            }
+
+            return 0;
         }
 
         async function updateMissingPhotoSize(customer, id, dateStr) {
