@@ -668,6 +668,62 @@
             justify-content: center;
         }
 
+        .choice-modal {
+            display: none;
+            position: fixed;
+            inset: 0;
+            z-index: 300;
+            background: rgba(0,0,0,0.42);
+            padding: 20px;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .choice-modal.show {
+            display: flex;
+        }
+
+        .choice-dialog {
+            width: min(100%, 420px);
+            background: var(--bg-card);
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 12px 36px rgba(0,0,0,0.2);
+        }
+
+        .choice-title {
+            font-size: 1.15rem;
+            font-weight: 600;
+            color: var(--primary);
+            margin-bottom: 8px;
+        }
+
+        .choice-message {
+            color: var(--text-light);
+            font-size: 0.92rem;
+            margin-bottom: 16px;
+        }
+
+        .choice-actions {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-bottom: 16px;
+        }
+
+        .choice-actions .lens-type-btn {
+            min-height: 52px;
+        }
+
+        .choice-footer {
+            display: flex;
+            gap: 10px;
+        }
+
+        .choice-footer .btn {
+            flex: 1;
+        }
+
         /* Settings */
         .setting-item {
             display: flex;
@@ -1357,6 +1413,24 @@ service firebase.storage {
     <div id="imageModal" class="modal" onclick="closeModal()">
         <button class="modal-close">×</button>
         <img id="modalImage" src="" alt="">
+    </div>
+
+    <!-- Lens Type Choice Modal -->
+    <div id="lensChoiceModal" class="choice-modal">
+        <div class="choice-dialog">
+            <div class="choice-title">請選擇鏡片項目</div>
+            <div class="choice-message">未揀項目，請喺下面揀返要儲存嘅項目。</div>
+            <div class="choice-actions">
+                <button type="button" class="lens-type-btn" data-type="遠視" onclick="toggleLensTypeFromModal(this)">👁️ 睇遠</button>
+                <button type="button" class="lens-type-btn" data-type="近視" onclick="toggleLensTypeFromModal(this)">📖 睇近</button>
+                <button type="button" class="lens-type-btn" data-type="漸進" onclick="toggleLensTypeFromModal(this)">🔄 漸進</button>
+                <button type="button" class="lens-type-btn" data-type="其他" onclick="toggleLensTypeFromModal(this)">📋 其他</button>
+            </div>
+            <div class="choice-footer">
+                <button type="button" class="btn" onclick="closeLensChoiceModal()">取消</button>
+                <button type="button" class="btn btn-primary" onclick="saveAfterLensChoice()">揀好並儲存</button>
+            </div>
+        </div>
     </div>
 
     <!-- Firebase SDK - Alternative CDN -->
@@ -2466,14 +2540,7 @@ service firebase.storage {
             
             // Set lens types
             selectedLensTypes = [...(customer.lensTypes || [])];
-            document.querySelectorAll('.lens-type-btn').forEach(btn => {
-                const type = btn.dataset.type;
-                if (selectedLensTypes.includes(type)) {
-                    btn.classList.add('selected');
-                } else {
-                    btn.classList.remove('selected');
-                }
-            });
+            syncLensButtons();
             
             // Set prescription data
             setRxData(customer.rx);
@@ -2506,6 +2573,45 @@ service firebase.storage {
 
         function closeModal() {
             document.getElementById('imageModal').classList.remove('show');
+        }
+
+        function syncLensButtons() {
+            document.querySelectorAll('.lens-type-btn').forEach(btn => {
+                btn.classList.toggle('selected', selectedLensTypes.includes(btn.dataset.type));
+            });
+        }
+
+        function toggleLensType(type) {
+            const index = selectedLensTypes.indexOf(type);
+            if (index > -1) {
+                selectedLensTypes.splice(index, 1);
+            } else {
+                selectedLensTypes.push(type);
+            }
+            syncLensButtons();
+            updateSubmitButton();
+        }
+
+        function openLensChoiceModal() {
+            syncLensButtons();
+            document.getElementById('lensChoiceModal').classList.add('show');
+        }
+
+        function closeLensChoiceModal() {
+            document.getElementById('lensChoiceModal').classList.remove('show');
+        }
+
+        function toggleLensTypeFromModal(btn) {
+            toggleLensType(btn.dataset.type);
+        }
+
+        function saveAfterLensChoice() {
+            if (selectedLensTypes.length === 0) {
+                showToast('請先選擇鏡片項目', 'error');
+                return;
+            }
+            closeLensChoiceModal();
+            handleSubmit();
         }
 
         function showToast(message, type = '') {
@@ -2692,9 +2798,8 @@ service firebase.storage {
         }
 
         function updateSubmitButton() {
-            const hasLensType = selectedLensTypes.length > 0;
             const hasPhoto = Object.values(uploadedPhotos).some(p => p);
-            document.getElementById('submitBtn').disabled = !hasLensType || !hasPhoto;
+            document.getElementById('submitBtn').disabled = !hasPhoto;
         }
 
         function resetUploadForm() {
@@ -2707,9 +2812,7 @@ service firebase.storage {
             
             // Reset lens type selection
             selectedLensTypes = [];
-            document.querySelectorAll('.lens-type-btn').forEach(btn => {
-                btn.classList.remove('selected');
-            });
+            syncLensButtons();
             
             // Reset prescription data
             resetRxData();
@@ -2853,6 +2956,11 @@ service firebase.storage {
         async function handleSubmit() {
             const submitBtn = document.getElementById('submitBtn');
             const isEditing = !!window.editingCustomerId;
+
+            if (selectedLensTypes.length === 0) {
+                openLensChoiceModal();
+                return;
+            }
             
             submitBtn.disabled = true;
             submitBtn.textContent = isEditing ? '更新中...' : '儲存中...';
@@ -2882,22 +2990,15 @@ service firebase.storage {
                 
                 await Promise.race([savePromise, timeoutPromise]);
                 
-                showToast(isEditing ? '✓ 資料已更新' : '✓ 資料已儲存', 'success');
-                
-                if (isEditing) {
-                    // Stay on the same record page, but exit edit mode
-                    const editedId = window.editingCustomerId;
-                    window.editingCustomerId = null;
-                    resetUploadForm();
-                    await showCustomerDetail(editedId);
-                    return;
-                }
+                showToast('儲存成功', 'success');
                 
                 // Clear editing mode for new records
                 window.editingCustomerId = null;
                 
-                resetUploadForm();
-                showPage('home');
+                setTimeout(() => {
+                    resetUploadForm();
+                    showPage('home');
+                }, 500);
             } catch (error) {
                 console.error('Submit error:', error);
                 showToast('儲存失敗: ' + error.message, 'error');
@@ -2915,20 +3016,9 @@ service firebase.storage {
             initRxSelects();
             
             // Setup lens type buttons (multi-select toggle)
-            document.querySelectorAll('.lens-type-btn').forEach(btn => {
+            document.querySelectorAll('.lens-type-grid .lens-type-btn').forEach(btn => {
                 btn.addEventListener('click', () => {
-                    const type = btn.dataset.type;
-                    const index = selectedLensTypes.indexOf(type);
-                    
-                    if (index > -1) {
-                        selectedLensTypes.splice(index, 1);
-                        btn.classList.remove('selected');
-                    } else {
-                        selectedLensTypes.push(type);
-                        btn.classList.add('selected');
-                    }
-                    
-                    updateSubmitButton();
+                    toggleLensType(btn.dataset.type);
                 });
             });
             
