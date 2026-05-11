@@ -640,6 +640,8 @@
             padding: 20px;
             align-items: center;
             justify-content: center;
+            overflow: hidden;
+            touch-action: none;
         }
 
         .modal.show {
@@ -650,6 +652,17 @@
             max-width: 100%;
             max-height: 100%;
             border-radius: 8px;
+            cursor: grab;
+            touch-action: none;
+            transform-origin: center center;
+            transition: transform 0.08s ease-out;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+
+        .modal img.dragging {
+            cursor: grabbing;
+            transition: none;
         }
 
         .modal-close {
@@ -1410,8 +1423,8 @@ service firebase.storage {
     <div id="toast" class="toast"></div>
 
     <!-- Image Modal -->
-    <div id="imageModal" class="modal" onclick="closeModal()">
-        <button class="modal-close">×</button>
+    <div id="imageModal" class="modal">
+        <button class="modal-close" onclick="closeModal()">×</button>
         <img id="modalImage" src="" alt="">
     </div>
 
@@ -1739,12 +1752,21 @@ service firebase.storage {
         };
         const uploadBlobs = {};
         const previewObjectUrls = {};
-        const MAX_IMAGE_DIMENSION = 1000;
-        const JPEG_QUALITY = 0.3;
+        const MAX_IMAGE_DIMENSION = 900;
+        const JPEG_QUALITY = 0.22;
         const CUSTOMER_LIST_LIMIT = 30;
         const CUSTOMER_LOAD_TIMEOUT_MS = 3000;
         let cachedCustomers = [];
         let currentRecordView = 'today';
+        const zoomState = {
+            scale: 1,
+            x: 0,
+            y: 0,
+            pointers: new Map(),
+            lastDistance: 0,
+            lastCenter: null,
+            lastTap: 0
+        };
 
         // Selection state
         let selectedCustomers = new Set();
@@ -2588,12 +2610,128 @@ service firebase.storage {
         }
 
         function showImageModal(url) {
-            document.getElementById('modalImage').src = url;
+            resetImageZoom();
+            const modalImage = document.getElementById('modalImage');
+            modalImage.src = url;
             document.getElementById('imageModal').classList.add('show');
         }
 
         function closeModal() {
             document.getElementById('imageModal').classList.remove('show');
+            resetImageZoom();
+        }
+
+        function resetImageZoom() {
+            zoomState.scale = 1;
+            zoomState.x = 0;
+            zoomState.y = 0;
+            zoomState.pointers.clear();
+            zoomState.lastDistance = 0;
+            zoomState.lastCenter = null;
+            applyImageZoom();
+        }
+
+        function applyImageZoom() {
+            const img = document.getElementById('modalImage');
+            if (!img) return;
+            img.style.transform = `translate(${zoomState.x}px, ${zoomState.y}px) scale(${zoomState.scale})`;
+        }
+
+        function getPointerCenter(points) {
+            const x = points.reduce((sum, point) => sum + point.clientX, 0) / points.length;
+            const y = points.reduce((sum, point) => sum + point.clientY, 0) / points.length;
+            return { x, y };
+        }
+
+        function getPointerDistance(points) {
+            if (points.length < 2) return 0;
+            return Math.hypot(points[0].clientX - points[1].clientX, points[0].clientY - points[1].clientY);
+        }
+
+        function clampZoomPosition() {
+            if (zoomState.scale <= 1) {
+                zoomState.x = 0;
+                zoomState.y = 0;
+                return;
+            }
+            const maxMove = 260 * zoomState.scale;
+            zoomState.x = Math.max(-maxMove, Math.min(maxMove, zoomState.x));
+            zoomState.y = Math.max(-maxMove, Math.min(maxMove, zoomState.y));
+        }
+
+        function setupImageZoom() {
+            const modal = document.getElementById('imageModal');
+            const img = document.getElementById('modalImage');
+
+            modal.addEventListener('click', (event) => {
+                if (event.target === modal) closeModal();
+            });
+
+            img.addEventListener('click', event => event.stopPropagation());
+            img.addEventListener('dragstart', event => event.preventDefault());
+
+            img.addEventListener('pointerdown', event => {
+                event.preventDefault();
+                try {
+                    img.setPointerCapture(event.pointerId);
+                } catch (error) {
+                    console.warn('Pointer capture unavailable:', error);
+                }
+                img.classList.add('dragging');
+                zoomState.pointers.set(event.pointerId, event);
+                const now = Date.now();
+                if (zoomState.pointers.size === 1 && now - zoomState.lastTap < 280) {
+                    zoomState.scale = zoomState.scale > 1 ? 1 : 2.2;
+                    clampZoomPosition();
+                    applyImageZoom();
+                }
+                zoomState.lastTap = now;
+                const points = Array.from(zoomState.pointers.values());
+                zoomState.lastCenter = getPointerCenter(points);
+                zoomState.lastDistance = getPointerDistance(points);
+            });
+
+            img.addEventListener('pointermove', event => {
+                if (!zoomState.pointers.has(event.pointerId)) return;
+                event.preventDefault();
+                zoomState.pointers.set(event.pointerId, event);
+                const points = Array.from(zoomState.pointers.values());
+                const center = getPointerCenter(points);
+
+                if (points.length >= 2) {
+                    const distance = getPointerDistance(points);
+                    if (zoomState.lastDistance > 0) {
+                        zoomState.scale = Math.max(1, Math.min(5, zoomState.scale * (distance / zoomState.lastDistance)));
+                    }
+                    if (zoomState.lastCenter) {
+                        zoomState.x += center.x - zoomState.lastCenter.x;
+                        zoomState.y += center.y - zoomState.lastCenter.y;
+                    }
+                    zoomState.lastDistance = distance;
+                } else if (zoomState.scale > 1 && zoomState.lastCenter) {
+                    zoomState.x += center.x - zoomState.lastCenter.x;
+                    zoomState.y += center.y - zoomState.lastCenter.y;
+                }
+
+                zoomState.lastCenter = center;
+                clampZoomPosition();
+                applyImageZoom();
+            });
+
+            ['pointerup', 'pointercancel', 'pointerleave'].forEach(type => {
+                img.addEventListener(type, event => {
+                    zoomState.pointers.delete(event.pointerId);
+                    if (zoomState.pointers.size === 0) {
+                        img.classList.remove('dragging');
+                        zoomState.lastDistance = 0;
+                        zoomState.lastCenter = null;
+                    } else {
+                        const points = Array.from(zoomState.pointers.values());
+                        zoomState.lastCenter = getPointerCenter(points);
+                        zoomState.lastDistance = getPointerDistance(points);
+                    }
+                });
+            });
         }
 
         function syncLensButtons() {
@@ -3038,6 +3176,7 @@ service firebase.storage {
         function initApp() {
             const firebaseOk = initFirebase();
             setupPhotoUploads();
+            setupImageZoom();
             setupSearch();
             initRxSelects();
             
