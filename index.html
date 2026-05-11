@@ -1752,10 +1752,11 @@ service firebase.storage {
         };
         const uploadBlobs = {};
         const previewObjectUrls = {};
-        const MAX_IMAGE_DIMENSION = 2200;
+        const MAX_IMAGE_DIMENSION = 2600;
+        const MIN_IMAGE_BYTES = 100 * 1024;
         const TARGET_IMAGE_BYTES = 150 * 1024;
         const MIN_JPEG_QUALITY = 0.05;
-        const MAX_JPEG_QUALITY = 0.92;
+        const MAX_JPEG_QUALITY = 0.98;
         const CUSTOMER_LIST_LIMIT = 30;
         const CUSTOMER_LOAD_TIMEOUT_MS = 3000;
         let cachedCustomers = [];
@@ -2941,19 +2942,8 @@ service firebase.storage {
          */
         async function compressImage(file) {
             const source = await decodeImageFile(file);
-            const scale = Math.min(1, MAX_IMAGE_DIMENSION / Math.max(source.width, source.height));
-            const targetWidth = Math.max(1, Math.round(source.width * scale));
-            const targetHeight = Math.max(1, Math.round(source.height * scale));
-
-            const canvas = document.createElement('canvas');
-            canvas.width = targetWidth;
-            canvas.height = targetHeight;
-
-            const ctx = canvas.getContext('2d', { alpha: false });
-            ctx.drawImage(source.image, 0, 0, targetWidth, targetHeight);
+            const blob = await compressSourceToTargetSize(source);
             source.close?.();
-
-            const blob = await compressCanvasToTargetSize(canvas);
 
             const dataUrl = await blobToDataUrl(blob);
             return {
@@ -2963,6 +2953,20 @@ service firebase.storage {
             };
         }
 
+        function renderImageToCanvas(source, maxDimension) {
+            const scale = maxDimension / Math.max(source.width, source.height);
+            const targetWidth = Math.max(1, Math.round(source.width * scale));
+            const targetHeight = Math.max(1, Math.round(source.height * scale));
+
+            const canvas = document.createElement('canvas');
+            canvas.width = targetWidth;
+            canvas.height = targetHeight;
+
+            const ctx = canvas.getContext('2d', { alpha: false });
+            ctx.drawImage(source.image, 0, 0, targetWidth, targetHeight);
+            return canvas;
+        }
+
         function canvasToJpegBlob(canvas, quality) {
             return new Promise((resolve, reject) => {
                 canvas.toBlob(result => {
@@ -2970,6 +2974,31 @@ service firebase.storage {
                     else reject(new Error('圖片壓縮失敗'));
                 }, 'image/jpeg', quality);
             });
+        }
+
+        async function compressSourceToTargetSize(source) {
+            const dimensions = [2600, 2400, 2200, 2000, 1800, 1600, 1400, 1200, 1000]
+                .filter(size => size <= MAX_IMAGE_DIMENSION);
+
+            const candidates = [];
+            for (const dimension of dimensions) {
+                const canvas = renderImageToCanvas(source, dimension);
+                candidates.push(await compressCanvasToTargetSize(canvas));
+                const latest = candidates[candidates.length - 1];
+                if (latest.size >= MIN_IMAGE_BYTES && latest.size <= TARGET_IMAGE_BYTES) {
+                    return latest;
+                }
+            }
+
+            const inRange = candidates.filter(blob => blob.size >= MIN_IMAGE_BYTES && blob.size <= TARGET_IMAGE_BYTES);
+            if (inRange.length > 0) return inRange[inRange.length - 1];
+
+            const underMin = candidates.filter(blob => blob.size < MIN_IMAGE_BYTES);
+            if (underMin.length > 0) {
+                return underMin.sort((a, b) => b.size - a.size)[0];
+            }
+
+            return candidates.sort((a, b) => a.size - b.size)[0];
         }
 
         async function compressCanvasToTargetSize(canvas) {
