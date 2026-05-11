@@ -1739,8 +1739,8 @@ service firebase.storage {
         };
         const uploadBlobs = {};
         const previewObjectUrls = {};
-        const MAX_IMAGE_DIMENSION = 1400;
-        const JPEG_QUALITY = 0.72;
+        const MAX_IMAGE_DIMENSION = 1000;
+        const JPEG_QUALITY = 0.58;
         const CUSTOMER_LIST_LIMIT = 30;
         const CUSTOMER_LOAD_TIMEOUT_MS = 3000;
         let cachedCustomers = [];
@@ -1825,6 +1825,15 @@ service firebase.storage {
             Object.keys(cache).forEach(view => {
                 cache[view] = (cache[view] || []).filter(c => c.id !== id);
             });
+            localStorage.setItem(CUSTOMER_SUMMARY_CACHE_KEY, JSON.stringify(cache));
+        }
+
+        function upsertCachedCustomer(record) {
+            const summary = toCustomerSummary(record);
+            cachedCustomers = [summary, ...cachedCustomers.filter(c => c.id !== summary.id)];
+            const view = isTodayRecord(summary) ? 'today' : 'past';
+            const cache = getSummaryCache();
+            cache[view] = [summary, ...(cache[view] || []).filter(c => c.id !== summary.id)].slice(0, CUSTOMER_LIST_LIMIT);
             localStorage.setItem(CUSTOMER_SUMMARY_CACHE_KEY, JSON.stringify(cache));
         }
 
@@ -1932,16 +1941,22 @@ service firebase.storage {
                 };
                 
                 console.log('Saving to Firestore...');
-                const docRef = await db.collection('customers').add(docData);
-                await saveCustomerSummary(docRef.id, {
+                const docRef = db.collection('customers').doc();
+                const summaryData = buildCustomerSummary({
                     ...docData,
                     id: docRef.id,
                     createdAt: createdAt.getTime(),
                     createdAtDate: createdAt
                 });
+                const batch = db.batch();
+                batch.set(docRef, docData);
+                batch.set(db.collection(CUSTOMER_SUMMARIES_COLLECTION).doc(docRef.id), summaryData, { merge: true });
+                await batch.commit();
                 console.log('Saved with ID:', docRef.id);
 
-                return { id: docRef.id, ...customerData, photos: photoUrls, createdAt: createdAt.getTime() };
+                const savedRecord = { id: docRef.id, ...customerData, photos: photoUrls, createdAt: createdAt.getTime() };
+                upsertCachedCustomer(savedRecord);
+                return savedRecord;
             } catch (error) {
                 console.error('Firebase save error:', error);
                 showToast('雲端儲存失敗，已存到本機', 'error');
@@ -2016,15 +2031,21 @@ service firebase.storage {
                     updatedAt: firebase.firestore.FieldValue.serverTimestamp()
                 };
                 
-                await db.collection('customers').doc(id).update(docData);
                 const existing = cachedCustomers.find(c => c.id === id) || {};
-                await saveCustomerSummary(id, {
+                const summaryData = buildCustomerSummary({
                     ...existing,
                     ...customerData,
                     photos: photoUrls,
+                    id,
                     createdAt: existing.createdAt || Date.now()
                 });
-                return { id, ...customerData, photos: photoUrls };
+                const batch = db.batch();
+                batch.update(db.collection('customers').doc(id), docData);
+                batch.set(db.collection(CUSTOMER_SUMMARIES_COLLECTION).doc(id), summaryData, { merge: true });
+                await batch.commit();
+                const updatedRecord = { id, ...customerData, photos: photoUrls, createdAt: existing.createdAt || Date.now() };
+                upsertCachedCustomer(updatedRecord);
+                return updatedRecord;
             } catch (error) {
                 console.error('Firebase update error:', error);
                 throw error;
