@@ -1922,10 +1922,12 @@ service firebase.storage {
                 const photoEntries = Object.entries(customerData.photos).filter(([, data]) => data);
                 const uploadedEntries = await Promise.all(photoEntries.map(async ([type, data]) => {
                     let photoUrl = data;
+                    let photoBytes = 0;
                     try {
                         const fileName = `photos/${Date.now()}_${Math.random().toString(36).substring(2, 11)}_${type}.jpg`;
                         const ref = storage.ref().child(fileName);
                         const blob = uploadBlobs[type] || dataUrlToBlob(data);
+                        photoBytes = blob.size;
                         const metadata = { contentType: 'image/jpeg', cacheControl: 'public,max-age=31536000' };
                         console.log('Uploading:', fileName);
 
@@ -1935,11 +1937,13 @@ service firebase.storage {
                     } catch (uploadError) {
                         console.error('Photo upload error:', type, uploadError);
                     }
-                    return [type, photoUrl];
+                    return [type, photoUrl, photoBytes];
                 }));
                 const photoUrls = {};
-                uploadedEntries.forEach(([type, url]) => {
+                const photoSizes = {};
+                uploadedEntries.forEach(([type, url, bytes]) => {
                     photoUrls[type] = url;
+                    if (bytes) photoSizes[type] = bytes;
                 });
 
                 for (const [type, data] of Object.entries(customerData.photos)) {
@@ -1958,6 +1962,8 @@ service firebase.storage {
                     lensTypes: customerData.lensTypes || [],
                     rx: customerData.rx || {},
                     photos: photoUrls,
+                    photoSizes,
+                    totalPhotoBytes: Object.values(photoSizes).reduce((sum, bytes) => sum + bytes, 0),
                     createdAt,
                     expiresAt
                 };
@@ -1976,7 +1982,7 @@ service firebase.storage {
                 await batch.commit();
                 console.log('Saved with ID:', docRef.id);
 
-                const savedRecord = { id: docRef.id, ...customerData, photos: photoUrls, createdAt: createdAt.getTime() };
+                const savedRecord = { id: docRef.id, ...customerData, photos: photoUrls, photoSizes, totalPhotoBytes: docData.totalPhotoBytes, createdAt: createdAt.getTime() };
                 upsertCachedCustomer(savedRecord);
                 return savedRecord;
             } catch (error) {
@@ -2017,24 +2023,29 @@ service firebase.storage {
                 const photoEntries = Object.entries(customerData.photos).filter(([, data]) => data);
                 const uploadedEntries = await Promise.all(photoEntries.map(async ([type, data]) => {
                     if (!data.startsWith('data:')) {
-                        return [type, data];
+                        return [type, data, customerData.photoSizes?.[type] || 0];
                     }
                     let photoUrl = data;
+                    let photoBytes = 0;
                     try {
                         const fileName = `photos/${Date.now()}_${Math.random().toString(36).substring(2, 11)}_${type}.jpg`;
                         const ref = storage.ref().child(fileName);
                         const blob = uploadBlobs[type] || dataUrlToBlob(data);
+                        photoBytes = blob.size;
                         const metadata = { contentType: 'image/jpeg', cacheControl: 'public,max-age=31536000' };
                         await ref.put(blob, metadata);
                         photoUrl = await ref.getDownloadURL();
                     } catch (uploadError) {
                         console.error('Photo upload error:', type, uploadError);
                     }
-                    return [type, photoUrl];
+                    return [type, photoUrl, photoBytes];
                 }));
                 const photoUrls = {};
-                uploadedEntries.forEach(([type, url]) => {
+                const existingCustomer = await getCustomerById(id);
+                const photoSizes = { ...(existingCustomer?.photoSizes || {}) };
+                uploadedEntries.forEach(([type, url, bytes]) => {
                     photoUrls[type] = url;
+                    if (bytes) photoSizes[type] = bytes;
                 });
 
                 for (const [type, data] of Object.entries(customerData.photos)) {
@@ -2050,10 +2061,12 @@ service firebase.storage {
                     lensTypes: customerData.lensTypes || [],
                     rx: customerData.rx || {},
                     photos: photoUrls,
+                    photoSizes,
+                    totalPhotoBytes: Object.values(photoSizes).reduce((sum, bytes) => sum + bytes, 0),
                     updatedAt: firebase.firestore.FieldValue.serverTimestamp()
                 };
                 
-                const existing = cachedCustomers.find(c => c.id === id) || {};
+                const existing = existingCustomer || cachedCustomers.find(c => c.id === id) || {};
                 const summaryData = buildCustomerSummary({
                     ...existing,
                     ...customerData,
@@ -2065,7 +2078,7 @@ service firebase.storage {
                 batch.update(db.collection('customers').doc(id), docData);
                 batch.set(db.collection(CUSTOMER_SUMMARIES_COLLECTION).doc(id), summaryData, { merge: true });
                 await batch.commit();
-                const updatedRecord = { id, ...customerData, photos: photoUrls, createdAt: existing.createdAt || Date.now() };
+                const updatedRecord = { id, ...customerData, photos: photoUrls, photoSizes, totalPhotoBytes: docData.totalPhotoBytes, createdAt: existing.createdAt || Date.now() };
                 upsertCachedCustomer(updatedRecord);
                 return updatedRecord;
             } catch (error) {
@@ -2155,6 +2168,17 @@ service firebase.storage {
         function getPhotoCount(record) {
             if (typeof record.photoCount === 'number') return record.photoCount;
             return Object.values(record.photos || {}).filter(p => p).length;
+        }
+
+        function getTotalPhotoBytes(record) {
+            if (typeof record.totalPhotoBytes === 'number') return record.totalPhotoBytes;
+            return Object.values(record.photoSizes || {}).reduce((sum, bytes) => sum + (Number(bytes) || 0), 0);
+        }
+
+        function formatBytes(bytes) {
+            if (!bytes) return '';
+            if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))}KB`;
+            return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
         }
 
         function buildCustomerQuery(collectionName, view) {
@@ -2500,6 +2524,7 @@ service firebase.storage {
 
             const date = new Date(customer.createdAt);
             const dateStr = `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日 ${date.getHours()}:${String(date.getMinutes()).padStart(2, '0')}`;
+            const totalPhotoSize = formatBytes(getTotalPhotoBytes(customer));
 
             const lensTypeLabels = {
                 '遠視': '👁️ 睇遠',
@@ -2541,7 +2566,7 @@ service firebase.storage {
                             ${lensTypeBadges}
                         </div>
                         ${customer.oldNumber ? `<div>📁 客人舊號碼：${escapeHtml(customer.oldNumber)}</div>` : ''}
-                        <div class="date-badge">建立時間：${dateStr}</div>
+                        <div class="date-badge">建立時間：${dateStr}${totalPhotoSize ? ` · ${totalPhotoSize}` : ''}</div>
                     </div>
                     ${formatRxHtml(customer.rx)}
                 </div>
@@ -2648,6 +2673,37 @@ service firebase.storage {
             return Math.hypot(points[0].clientX - points[1].clientX, points[0].clientY - points[1].clientY);
         }
 
+        function getTouchPoints(touches) {
+            return Array.from(touches).map(touch => ({
+                clientX: touch.clientX,
+                clientY: touch.clientY
+            }));
+        }
+
+        function updateZoomFromPoints(points) {
+            if (points.length === 0) return;
+            const center = getPointerCenter(points);
+
+            if (points.length >= 2) {
+                const distance = getPointerDistance(points);
+                if (zoomState.lastDistance > 0) {
+                    zoomState.scale = Math.max(1, Math.min(5, zoomState.scale * (distance / zoomState.lastDistance)));
+                }
+                if (zoomState.lastCenter) {
+                    zoomState.x += center.x - zoomState.lastCenter.x;
+                    zoomState.y += center.y - zoomState.lastCenter.y;
+                }
+                zoomState.lastDistance = distance;
+            } else if (zoomState.scale > 1 && zoomState.lastCenter) {
+                zoomState.x += center.x - zoomState.lastCenter.x;
+                zoomState.y += center.y - zoomState.lastCenter.y;
+            }
+
+            zoomState.lastCenter = center;
+            clampZoomPosition();
+            applyImageZoom();
+        }
+
         function clampZoomPosition() {
             if (zoomState.scale <= 1) {
                 zoomState.x = 0;
@@ -2669,6 +2725,46 @@ service firebase.storage {
 
             img.addEventListener('click', event => event.stopPropagation());
             img.addEventListener('dragstart', event => event.preventDefault());
+
+            img.addEventListener('touchstart', event => {
+                event.preventDefault();
+                img.classList.add('dragging');
+                const now = Date.now();
+                const points = getTouchPoints(event.touches);
+                if (points.length === 1 && now - zoomState.lastTap < 280) {
+                    zoomState.scale = zoomState.scale > 1 ? 1 : 2.2;
+                    clampZoomPosition();
+                    applyImageZoom();
+                }
+                zoomState.lastTap = now;
+                zoomState.lastCenter = getPointerCenter(points);
+                zoomState.lastDistance = getPointerDistance(points);
+            }, { passive: false });
+
+            img.addEventListener('touchmove', event => {
+                event.preventDefault();
+                updateZoomFromPoints(getTouchPoints(event.touches));
+            }, { passive: false });
+
+            img.addEventListener('touchend', event => {
+                event.preventDefault();
+                if (event.touches.length === 0) {
+                    img.classList.remove('dragging');
+                    zoomState.lastDistance = 0;
+                    zoomState.lastCenter = null;
+                    return;
+                }
+                const points = getTouchPoints(event.touches);
+                zoomState.lastCenter = getPointerCenter(points);
+                zoomState.lastDistance = getPointerDistance(points);
+            }, { passive: false });
+
+            img.addEventListener('touchcancel', event => {
+                event.preventDefault();
+                img.classList.remove('dragging');
+                zoomState.lastDistance = 0;
+                zoomState.lastCenter = null;
+            }, { passive: false });
 
             img.addEventListener('pointerdown', event => {
                 event.preventDefault();
@@ -2695,27 +2791,7 @@ service firebase.storage {
                 if (!zoomState.pointers.has(event.pointerId)) return;
                 event.preventDefault();
                 zoomState.pointers.set(event.pointerId, event);
-                const points = Array.from(zoomState.pointers.values());
-                const center = getPointerCenter(points);
-
-                if (points.length >= 2) {
-                    const distance = getPointerDistance(points);
-                    if (zoomState.lastDistance > 0) {
-                        zoomState.scale = Math.max(1, Math.min(5, zoomState.scale * (distance / zoomState.lastDistance)));
-                    }
-                    if (zoomState.lastCenter) {
-                        zoomState.x += center.x - zoomState.lastCenter.x;
-                        zoomState.y += center.y - zoomState.lastCenter.y;
-                    }
-                    zoomState.lastDistance = distance;
-                } else if (zoomState.scale > 1 && zoomState.lastCenter) {
-                    zoomState.x += center.x - zoomState.lastCenter.x;
-                    zoomState.y += center.y - zoomState.lastCenter.y;
-                }
-
-                zoomState.lastCenter = center;
-                clampZoomPosition();
-                applyImageZoom();
+                updateZoomFromPoints(Array.from(zoomState.pointers.values()));
             });
 
             ['pointerup', 'pointercancel', 'pointerleave'].forEach(type => {
