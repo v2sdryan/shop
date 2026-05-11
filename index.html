@@ -1299,7 +1299,7 @@
             </div>
         </div>
 
-        <button class="btn btn-primary" id="submitBtn" disabled>
+        <button class="btn btn-primary" id="submitBtn">
             儲存資料
         </button>
     </div>
@@ -2798,8 +2798,7 @@ service firebase.storage {
         }
 
         function updateSubmitButton() {
-            const hasPhoto = Object.values(uploadedPhotos).some(p => p);
-            document.getElementById('submitBtn').disabled = !hasPhoto;
+            document.getElementById('submitBtn').disabled = false;
         }
 
         function resetUploadForm() {
@@ -2956,6 +2955,12 @@ service firebase.storage {
         async function handleSubmit() {
             const submitBtn = document.getElementById('submitBtn');
             const isEditing = !!window.editingCustomerId;
+            const hasPhoto = Object.values(uploadedPhotos).some(p => p);
+
+            if (!hasPhoto) {
+                showToast('請先上載相片', 'error');
+                return;
+            }
 
             if (selectedLensTypes.length === 0) {
                 openLensChoiceModal();
